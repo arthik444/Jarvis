@@ -1,8 +1,12 @@
-# FastAPI entry point - no business logic yet
+# FastAPI entry point
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import voice
+from app.config import setup_google_credentials
+
+# Set up Google Cloud credentials from .env
+setup_google_credentials()
 
 app = FastAPI(
     title="Mini Jarvis API",
