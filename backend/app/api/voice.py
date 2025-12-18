@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.services.stt import get_stt_service
 from app.services.gemini import get_gemini_service
+from app.services.tts import get_tts_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -19,6 +20,7 @@ class IngestResponse(BaseModel):
     audio_size_bytes: int
     transcript: str
     ai_response: str
+    audio_base64: str | None = None  # Base64-encoded audio from TTS
 
 
 @router.post("/ingest", response_model=IngestResponse)
@@ -65,10 +67,22 @@ async def ingest_audio(audio: UploadFile = File(...)):
         
         # Generate AI response using Gemini Flash
         ai_response = ""
+        audio_base64 = None
+        
         if transcript:
             try:
                 gemini_service = get_gemini_service()
                 ai_response = await gemini_service.generate_response(transcript)
+                
+                # Convert AI response to speech
+                try:
+                    tts_service = get_tts_service()
+                    audio_base64 = tts_service.text_to_speech_base64(ai_response)
+                except ValueError as e:
+                    logger.warning(f"TTS not configured: {e}")
+                except Exception as e:
+                    logger.error(f"TTS generation failed: {e}")
+                    
             except ValueError as e:
                 # API key not configured
                 logger.warning(f"Gemini not configured: {e}")
@@ -85,6 +99,7 @@ async def ingest_audio(audio: UploadFile = File(...)):
             audio_size_bytes=audio_size,
             transcript=transcript,
             ai_response=ai_response,
+            audio_base64=audio_base64,
         )
     except HTTPException:
         # Re-raise HTTP exceptions

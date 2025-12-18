@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     
     # Gemini API key for conversational AI
     gemini_api_key: str | None = None
+    
+    # ElevenLabs configuration for Text-to-Speech
+    elevenlabs_api_key: str | None = None
+    elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Default: Rachel voice
 
     class Config:
         env_file = ".env"
