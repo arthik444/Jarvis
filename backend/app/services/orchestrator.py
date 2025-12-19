@@ -193,19 +193,55 @@ class OrchestratorService:
 
     async def _handle_daily_summary(self, transcript: str) -> Dict[str, Any]:
         """
-        Handle daily summary requests with mock data.
+        Handle daily summary requests with real calendar data.
         
         Args:
             transcript: User's summary request
             
         Returns:
-            Mock daily summary
+            Daily summary with calendar events
         """
         logger.info("Handler: DAILY_SUMMARY")
+        
+        try:
+            # Try to get real calendar events
+            from app.services.calendar_tool import get_calendar_tool
+            from datetime import datetime
+            
+            calendar_tool = get_calendar_tool()
+            events = calendar_tool.get_today_events()
+            
+            if events:
+                # Use real calendar data
+                summary_message = calendar_tool.summarize_events(events)
+                
+                return {
+                    "type": "summary",
+                    "data": {
+                        "date": datetime.now().strftime("%Y-%m-%d"),
+                        "events": events,
+                        "event_count": len(events),
+                        "source": "google_calendar"
+                    },
+                    "message": summary_message,
+                }
+            else:
+                # Fallback to mock data if no events
+                logger.info("No calendar events found, using mock summary")
+                return self._get_mock_daily_summary()
+                
+        except Exception as e:
+            # Fallback to mock data on any error
+            logger.warning(f"Calendar integration failed, using mock data: {e}")
+            return self._get_mock_daily_summary()
+    
+    def _get_mock_daily_summary(self) -> Dict[str, Any]:
+        """Return mock daily summary data"""
+        from datetime import datetime
         return {
             "type": "summary",
             "data": {
-                "date": "2025-12-19",
+                "date": datetime.now().strftime("%Y-%m-%d"),
                 "tasks_completed": 5,
                 "tasks_pending": 3,
                 "meetings_attended": 2,
@@ -214,6 +250,7 @@ class OrchestratorService:
                     "Team standup at 10 AM",
                     "Code review session",
                 ],
+                "source": "mock_data"
             },
             "message": "Today you completed 5 tasks and attended 2 meetings. Great progress!",
         }
