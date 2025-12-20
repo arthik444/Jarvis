@@ -200,6 +200,162 @@ class CalendarTool:
         
         return summary
 
+    # ========== Calendar Write Functions (for UI & Voice) ==========
+
+    def create_event(
+        self, 
+        summary: str, 
+        start_time: str, 
+        end_time: str,
+        description: str = "",
+        location: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Create a new calendar event.
+        
+        Args:
+            summary: Event title/summary
+            start_time: Start time in ISO format (e.g., "2025-12-20T14:00:00-05:00")
+            end_time: End time in ISO format
+            description: Optional event description
+            location: Optional event location
+            
+        Returns:
+            Created event data or error dict
+        """
+        if not self.service:
+            logger.error("Cannot create event: Calendar not authorized")
+            return {"error": "Calendar not authorized"}
+        
+        try:
+            event = {
+                'summary': summary,
+                'description': description,
+                'location': location,
+                'start': {'dateTime': start_time},
+                'end': {'dateTime': end_time}
+            }
+            
+            created_event = self.service.events().insert(
+                calendarId=self.calendar_id,
+                body=event
+            ).execute()
+            
+            logger.info(f"✓ Created event: {summary}")
+            
+            # Invalidate cache
+            self._cache_timestamp = None
+            
+            return {
+                'id': created_event.get('id'),
+                'summary': created_event.get('summary'),
+                'start': created_event.get('start', {}).get('dateTime'),
+                'htmlLink': created_event.get('htmlLink')
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to create event: {e}")
+            return {"error": str(e)}
+
+    def update_event(
+        self,
+        event_id: str,
+        summary: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        description: str | None = None,
+        location: str | None = None
+    ) -> Dict[str, Any]:
+        """
+        Update an existing calendar event.
+        
+        Args:
+            event_id: ID of event to update
+            summary: New title (optional)
+            start_time: New start time in ISO format (optional)
+            end_time: New end time in ISO format (optional)
+            description: New description (optional)
+            location: New location (optional)
+            
+        Returns:
+            Updated event data or error dict
+        """
+        if not self.service:
+            logger.error("Cannot update event: Calendar not authorized")
+            return {"error": "Calendar not authorized"}
+        
+        try:
+            # Get existing event
+            event = self.service.events().get(
+                calendarId=self.calendar_id,
+                eventId=event_id
+            ).execute()
+            
+            # Update fields if provided
+            if summary is not None:
+                event['summary'] = summary
+            if description is not None:
+                event['description'] = description
+            if location is not None:
+                event['location'] = location
+            if start_time is not None:
+                event['start'] = {'dateTime': start_time}
+            if end_time is not None:
+                event['end'] = {'dateTime': end_time}
+            
+            # Save updates
+            updated_event = self.service.events().update(
+                calendarId=self.calendar_id,
+                eventId=event_id,
+                body=event
+            ).execute()
+            
+            logger.info(f"✓ Updated event: {event_id}")
+            
+            # Invalidate cache
+            self._cache_timestamp = None
+            
+            return {
+                'id': updated_event.get('id'),
+                'summary': updated_event.get('summary'),
+                'htmlLink': updated_event.get('htmlLink')
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to update event: {e}")
+            return {"error": str(e)}
+
+    def delete_event(self, event_id: str) -> Dict[str, Any]:
+        """
+        Delete a calendar event.
+        
+        Args:
+            event_id: ID of event to delete
+            
+        Returns:
+            Success status or error dict
+        """
+        if not self.service:
+            logger.error("Cannot delete event: Calendar not authorized")
+            return {"error": "Calendar not authorized"}
+        
+        try:
+            self.service.events().delete(
+                calendarId=self.calendar_id,
+                eventId=event_id
+            ).execute()
+            
+            logger.info(f"✓ Deleted event: {event_id}")
+            
+            # Invalidate cache
+            self._cache_timestamp = None
+            
+            return {"success": True, "message": f"Event {event_id} deleted"}
+            
+        except Exception as e:
+            logger.error(f"Failed to delete event: {e}")
+            return {"error": str(e)}
+
     def _is_cache_valid(self) -> bool:
         """Check if cache is still valid"""
         if not self._cache_timestamp:

@@ -17,8 +17,8 @@ router = APIRouter()
 # Token storage path
 TOKEN_FILE = Path("calendar_token.json")
 
-# Calendar readonly scope
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+# Calendar scopes - includes write access
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 
 class AuthStatus(BaseModel):

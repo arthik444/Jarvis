@@ -127,7 +127,7 @@ Assistant:"""
 
 Input: "{user_message}"
 
-Intents: GET_WEATHER, ADD_TASK, DAILY_SUMMARY, LEARN, GENERAL_CHAT
+Intents: GET_WEATHER, ADD_TASK, DAILY_SUMMARY, DELETE_CALENDAR_EVENT, LEARN, GENERAL_CHAT
 
 Output format:
 {{"intent": "INTENT_NAME", "confidence": 0.95}}"""

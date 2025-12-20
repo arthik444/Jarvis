@@ -127,18 +127,19 @@ class OrchestratorService:
             logger.info(f"Low confidence ({confidence}), fallback to GENERAL_CHAT")
             intent = "GENERAL_CHAT"
         
-        # Route to handlers
-        if intent == "GET_WEATHER":
-            return await self._handle_get_weather(transcript)
-        elif intent == "ADD_TASK":
-            return await self._handle_add_task(transcript)
-        elif intent == "DAILY_SUMMARY":
-            return await self._handle_daily_summary(transcript)
-        elif intent == "LEARN":
-            return await self._handle_learn(transcript)
-        else:
-            # Default to general chat
-            return await self._handle_general_chat(transcript)
+        # Handler mapping
+        handlers = {
+            "GET_WEATHER": self._handle_get_weather,
+            "ADD_TASK": self._handle_add_task,
+            "DAILY_SUMMARY": self._handle_daily_summary,
+            "DELETE_CALENDAR_EVENT": self._handle_delete_calendar_event,
+            "LEARN": self._handle_learn,
+            "GENERAL_CHAT": self._handle_general_chat,
+        }
+        
+        # Get handler or default to general chat
+        handler = handlers.get(intent, self._handle_general_chat)
+        return await handler(transcript)
 
     # ========== Handler Functions (Mock Data) ==========
 
@@ -254,6 +255,73 @@ class OrchestratorService:
             },
             "message": "Today you completed 5 tasks and attended 2 meetings. Great progress!",
         }
+
+    async def _handle_delete_calendar_event(self, transcript: str) -> Dict[str, Any]:
+        """
+        Handle calendar event deletion requests.
+        
+        Args:
+            transcript: User's delete request
+            
+        Returns:
+            Deletion confirmation or error
+        """
+        logger.info("Handler: DELETE_CALENDAR_EVENT")
+        
+        try:
+            from app.services.calendar_tool import get_calendar_tool
+            
+            calendar_tool = get_calendar_tool()
+            events = calendar_tool.get_today_events()
+            
+            if not events:
+                return {
+                    "type": "calendar_delete",
+                    "data": {"error": "No events found"},
+                    "message": "You don't have any events today to delete."
+                }
+            
+            # Find matching event by name in transcript
+            transcript_lower = transcript.lower()
+            matching_event = None
+            
+            for event in events:
+                event_summary = event.get('summary', '').lower()
+                if event_summary and event_summary in transcript_lower:
+                    matching_event = event
+                    break
+            
+            if not matching_event:
+                event_names = [e.get('summary') for e in events]
+                return {
+                    "type": "calendar_delete",
+                    "data": {"available_events": event_names},
+                    "message": f"I couldn't find that event. You have: {', '.join(event_names)}."
+                }
+            
+            # Delete the event
+            result = calendar_tool.delete_event(matching_event['id'])
+            
+            if "error" in result:
+                return {
+                    "type": "calendar_delete",
+                    "data": result,
+                    "message": f"Failed to delete: {result['error']}"
+                }
+            
+            return {
+                "type": "calendar_delete",
+                "data": {"deleted_event": matching_event['summary']},
+                "message": f"I've deleted '{matching_event['summary']}' from your calendar."
+            }
+            
+        except Exception as e:
+            logger.error(f"Calendar deletion failed: {e}")
+            return {
+                "type": "calendar_delete",
+                "data": {"error": str(e)},
+                "message": "I had trouble deleting that event. Please try again."
+            }
 
     async def _handle_learn(self, transcript: str) -> Dict[str, Any]:
         """
