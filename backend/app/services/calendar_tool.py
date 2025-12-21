@@ -110,18 +110,29 @@ class CalendarTool:
             return []
         
         try:
-            # Get today's date range (start and end of day)
-            now = datetime.now()
-            today_start = datetime(now.year, now.month, now.day, 0, 0, 0).isoformat() + 'Z'
-            today_end = datetime(now.year, now.month, now.day, 23, 59, 59).isoformat() + 'Z'
+            # Get today's date range (start and end of day) with LOCAL timezone
+            # Using timezone-aware datetime to avoid UTC conversion issues
+            from datetime import timezone
             
-            logger.info(f"Fetching events from {today_start} to {today_end}")
+            # Get current local time with timezone info
+            now = datetime.now().astimezone()
+            
+            # Start of today (midnight local time)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            # End of today (11:59:59 PM local time)
+            today_end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            
+            # Convert to ISO format with timezone (Google Calendar API requires RFC3339)
+            today_start_iso = today_start.isoformat()
+            today_end_iso = today_end.isoformat()
+            
+            logger.info(f"Fetching events from {today_start_iso} to {today_end_iso}")
             
             # Call Calendar API
             events_result = self.service.events().list(
                 calendarId=self.calendar_id,
-                timeMin=today_start,
-                timeMax=today_end,
+                timeMin=today_start_iso,
+                timeMax=today_end_iso,
                 singleEvents=True,
                 orderBy='startTime'
             ).execute()

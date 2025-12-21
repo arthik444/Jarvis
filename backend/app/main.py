@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, voice
+from app.api import auth, voice, chat
 from app.config import setup_google_credentials
 
 # Set up Google Cloud credentials from .env
@@ -25,6 +25,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(voice.router, prefix="/api/voice", tags=["voice"])
+app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 
 
