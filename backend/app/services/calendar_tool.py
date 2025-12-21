@@ -165,6 +165,66 @@ class CalendarTool:
             logger.error(f"Failed to fetch calendar events: {e}")
             return []
 
+    def get_events_in_range(
+        self,
+        start_date: datetime,
+        end_date: datetime
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch events from Google Calendar for a specific date range.
+        
+        Args:
+            start_date: Start datetime (timezone-aware)
+            end_date: End datetime (timezone-aware)
+            
+        Returns:
+            List of event dictionaries with id, summary, start, end, location
+            Returns empty list if not authorized or API fails
+        """
+        if not self.service:
+            logger.warning("Calendar service not available (not authorized)")
+            return []
+        
+        try:
+            # Convert to ISO format with timezone
+            start_iso = start_date.isoformat()
+            end_iso = end_date.isoformat()
+            
+            logger.info(f"Fetching events from {start_iso} to {end_iso}")
+            
+            # Call Calendar API
+            events_result = self.service.events().list(
+                calendarId=self.calendar_id,
+                timeMin=start_iso,
+                timeMax=end_iso,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            
+            events = events_result.get('items', [])
+            
+            # Transform to simplified structure
+            simplified_events = []
+            for event in events:
+                simplified_event = {
+                    'id': event.get('id', ''),
+                    'summary': event.get('summary', 'Untitled Event'),
+                    'start': event.get('start', {}).get('dateTime', event.get('start', {}).get('date', '')),
+                    'end': event.get('end', {}).get('dateTime', event.get('end', {}).get('date', '')),
+                    'location': event.get('location', ''),
+                }
+                simplified_events.append(simplified_event)
+            
+            logger.info(f"✓ Fetched {len(simplified_events)} events in range")
+            return simplified_events
+            
+        except HttpError as e:
+            logger.error(f"Calendar API error: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Failed to fetch calendar events: {e}")
+            return []
+
     def summarize_events(self, events: List[Dict[str, Any]]) -> str:
         """
         Create human-readable summary of events.

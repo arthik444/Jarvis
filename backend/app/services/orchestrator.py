@@ -2,6 +2,7 @@
 import logging
 from functools import lru_cache
 from typing import Any, Dict
+from datetime import datetime, timedelta
 
 from app.services.gemini import get_gemini_service
 
@@ -142,6 +143,69 @@ class OrchestratorService:
         handler = handlers.get(intent, self._handle_general_chat)
         return await handler(transcript)
 
+    def _parse_date_range(self, transcript: str) -> tuple[Any, Any]:
+        """
+        Parse natural language date references from transcript.
+        
+        Supports:
+          - "today" -> (today 00:00, today 23:59)
+          - "tomorrow" -> (tomorrow 00:00, tomorrow 23:59)
+          - "next Monday", "Tuesday", etc. -> (next occurrence 00:00, 23:59)
+          - No match -> (today 00:00, 7 days from now 23:59)
+        
+        Args:
+            transcript: User's message
+            
+        Returns:
+            Tuple of (start_datetime, end_datetime) with timezone
+        """
+        from datetime import timedelta
+        import re
+        
+        # Get current local time with timezone
+        now = datetime.now().astimezone()
+        transcript_lower = transcript.lower()
+        
+        # Check for "today"
+        if "today" in transcript_lower:
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            return (start, end)
+        
+        # Check for "tomorrow"
+        if "tomorrow" in transcript_lower:
+            tomorrow = now + timedelta(days=1)
+            start = tomorrow.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = tomorrow.replace(hour=23, minute=59, second=59, microsecond=999999)
+            return (start, end)
+        
+        # Check for specific day names (e.g., "Monday", "next Tuesday")
+        day_names = {
+            'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
+            'friday': 4, 'saturday': 5, 'sunday': 6
+        }
+        
+        for day_name, day_num in day_names.items():
+            if day_name in transcript_lower:
+                # Calculate next occurrence of this day
+                current_day = now.weekday()
+                days_ahead = (day_num - current_day) % 7
+                
+                # If it's the same day, assume next week
+                if days_ahead == 0:
+                    days_ahead = 7
+                
+                target_date = now + timedelta(days=days_ahead)
+                start = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                end = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                return (start, end)
+        
+        # Default: next 7 days (for update/delete operations)
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = (now + timedelta(days=7)).replace(hour=23, minute=59, second=59, microsecond=999999)
+        logger.info(f"No specific date found, using default range: next 7 days")
+        return (start, end)
+
     # ========== Handler Functions (Mock Data) ==========
 
     async def _handle_get_weather(self, transcript: str) -> Dict[str, Any]:
@@ -196,6 +260,7 @@ class OrchestratorService:
     async def _handle_daily_summary(self, transcript: str) -> Dict[str, Any]:
         """
         Handle daily summary requests with real calendar data.
+        Supports date references like "today", "tomorrow", "next Monday".
         
         Args:
             transcript: User's summary request
@@ -208,19 +273,38 @@ class OrchestratorService:
         try:
             # Try to get real calendar events
             from app.services.calendar_tool import get_calendar_tool
-            from datetime import datetime
             
             calendar_tool = get_calendar_tool()
-            events = calendar_tool.get_today_events()
+            
+            # Parse date range from transcript
+            start_date, end_date = self._parse_date_range(transcript)
+            
+            # Fetch events for the specified date range
+            events = calendar_tool.get_events_in_range(start_date, end_date)
             
             if events:
                 # Use real calendar data
                 summary_message = calendar_tool.summarize_events(events)
                 
+                # Determine date context for response
+                now = datetime.now().astimezone()
+                is_today = start_date.date() == now.date()
+                is_tomorrow = start_date.date() == (now + timedelta(days=1)).date()
+                
+                # Update message to reflect the date
+                if not is_today:
+                    if is_tomorrow:
+                        date_str = "tomorrow"
+                    else:
+                        date_str = f"on {start_date.strftime('%A, %B %d')}"
+                    
+                    # Replace "today" with appropriate date reference
+                    summary_message = summary_message.replace("today", date_str)
+                
                 return {
                     "type": "summary",
                     "data": {
-                        "date": datetime.now().strftime("%Y-%m-%d"),
+                        "date": start_date.strftime("%Y-%m-%d"),
                         "events": events,
                         "event_count": len(events),
                         "source": "google_calendar"
@@ -228,9 +312,31 @@ class OrchestratorService:
                     "message": summary_message,
                 }
             else:
-                # Fallback to mock data if no events
-                logger.info("No calendar events found, using mock summary")
-                return self._get_mock_daily_summary()
+                # No events found
+                logger.info("No calendar events found for specified date range")
+                
+                # Determine date context
+                now = datetime.now().astimezone()
+                is_today = start_date.date() == now.date()
+                is_tomorrow = start_date.date() == (now + timedelta(days=1)).date()
+                
+                if is_today:
+                    date_msg = "today"
+                elif is_tomorrow:
+                    date_msg = "tomorrow"
+                else:
+                    date_msg = f"on {start_date.strftime('%A, %B %d')}"
+                
+                return {
+                    "type": "summary",
+                    "data": {
+                        "date": start_date.strftime("%Y-%m-%d"),
+                        "events": [],
+                        "event_count": 0,
+                        "source": "google_calendar"
+                    },
+                    "message": f"You have no events scheduled {date_msg}.",
+                }
                 
         except Exception as e:
             # Fallback to mock data on any error
@@ -381,7 +487,12 @@ class OrchestratorService:
                     "message": "I couldn't tell which event you want to update. Please specify the event name."
                 }
             
-            events = calendar_tool.get_today_events()
+            # Parse date range from transcript (default: next 7 days)
+            start_date, end_date = self._parse_date_range(transcript)
+            
+            # Fetch events in the date range
+            events = calendar_tool.get_events_in_range(start_date, end_date)
+            
             # Find the event (flexible matching)
             matching_event = None
             
@@ -501,8 +612,11 @@ class OrchestratorService:
             
             logger.info(f"Extracted event name for deletion: '{event_name}'")
             
-            # Fetch today's events
-            events = calendar_tool.get_today_events()
+            # Parse date range from transcript (default: next 7 days)
+            start_date, end_date = self._parse_date_range(transcript)
+            
+            # Fetch events in the date range
+            events = calendar_tool.get_events_in_range(start_date, end_date)
             
             if not events:
                 return {
