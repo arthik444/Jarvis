@@ -234,28 +234,51 @@ class OrchestratorService:
 
     async def _handle_add_task(self, transcript: str) -> Dict[str, Any]:
         """
-        Handle task creation with mock confirmation.
+        Handle task creation requests with Firestore persistence.
         
         Args:
             transcript: User's task creation request
             
         Returns:
-            Mock task creation confirmation
+            Task creation confirmation with persisted data
         """
         logger.info("Handler: ADD_TASK")
-        # Extract task from transcript (simple mock - just use the transcript)
-        task_text = transcript.replace("add", "").replace("to my todo list", "").strip()
         
-        return {
-            "type": "task",
-            "data": {
-                "task_id": "mock_task_123",
-                "task_text": task_text,
-                "created_at": "2025-12-19T14:48:00Z",
-                "status": "pending",
-            },
-            "message": f"I've added '{task_text}' to your task list.",
-        }
+        try:
+            from app.services.task_tool import get_task_tool
+            
+            # Extract task title from transcript
+            # Simple extraction: remove common trigger words
+            task_title = transcript
+            for trigger in ["add", "create", "new task", "to my todo list", "to my tasks", "to do"]:
+                task_title = task_title.replace(trigger, "")
+            task_title = task_title.strip()
+            
+            # If title is empty after cleaning, use original transcript
+            if not task_title:
+                task_title = transcript
+            
+            # Create task in Firestore
+            task_tool = get_task_tool()
+            task = task_tool.add_task(
+                title=task_title,
+                status="pending"
+            )
+            
+            return {
+                "type": "task",
+                "data": task,
+                "message": f"I've added '{task_title}' to your task list.",
+            }
+            
+        except Exception as e:
+            logger.error(f"Task creation failed: {e}")
+            # Fallback to informative error message
+            return {
+                "type": "task",
+                "data": {"error": str(e)},
+                "message": "I had trouble adding that task. Please try again.",
+            }
 
     async def _handle_daily_summary(self, transcript: str) -> Dict[str, Any]:
         """
