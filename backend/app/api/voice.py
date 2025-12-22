@@ -72,20 +72,33 @@ async def ingest_audio(
         
         logger.info(f"Transcription complete: '{transcript}'")
         
-        # Classify intent and generate AI response
+        # Process with orchestrator and generate AI response
         ai_response = ""
         audio_base64 = None
         intent_result = None
+        orchestrator_data = None
         
         if transcript:
             try:
-                gemini_service = get_gemini_service()
+                # Use orchestrator for intent classification and routing
+                from app.services.orchestrator import get_orchestrator
                 
-                # Classify intent first
-                intent_result = await gemini_service.classify_intent(transcript)
+                orchestrator = get_orchestrator()
+                orchestrator_result = await orchestrator.process_transcript(transcript)
                 
-                # Generate conversational response
-                ai_response = await gemini_service.generate_response(transcript)
+                # Extract intent info for response
+                intent_result = {
+                    "intent": orchestrator_result["intent"],
+                    "confidence": orchestrator_result["confidence"],
+                }
+                
+                # Get handler response message as AI response
+                ai_response = orchestrator_result["handler_response"]["message"]
+                
+                # Store full orchestrator data for potential future use
+                orchestrator_data = orchestrator_result["handler_response"]["data"]
+                
+                logger.info(f"Orchestrator response: {ai_response}")
                 
                 # Convert AI response to speech
                 try:
@@ -101,10 +114,10 @@ async def ingest_audio(
                     
             except ValueError as e:
                 # API key not configured
-                logger.warning(f"Gemini not configured: {e}")
+                logger.warning(f"Orchestrator/Gemini not configured: {e}")
                 ai_response = "AI responses not configured."
             except Exception as e:
-                logger.error(f"Gemini generation failed: {e}")
+                logger.error(f"Orchestrator processing failed: {e}")
                 ai_response = "I'm having trouble thinking right now."
         else:
             ai_response = "I didn't catch that. Could you repeat?"
@@ -175,18 +188,31 @@ async def ingest_audio_stream(
         
         logger.info(f"Streaming: Transcription complete: '{transcript}'")
         
-        # Stream audio generator
+        # Initialize intent and confidence outside the generator to capture them
+        # These will be updated by the first chunk from the orchestrator stream
+        intent_header = "GENERAL_CHAT"
+        confidence_header = 0.0
+        
+        # Stream audio generator using orchestrator
         async def generate_audio():
+            nonlocal intent_header, confidence_header
             try:
                 # Get services
-                gemini_service = get_gemini_service()
+                from app.services.orchestrator import get_orchestrator
                 tts_service = get_tts_service()
+                orchestrator = get_orchestrator()
                 
-                # Stream text from Gemini
-                text_stream = gemini_service.generate_response_stream(transcript)
+                # Stream text from orchestrator (handles intent routing)
+                async def text_generator():
+                    async for text_chunk, chunk_intent, chunk_confidence in orchestrator.process_transcript_stream(transcript):
+                        # Capture intent/confidence from first chunk for headers
+                        if intent_header == "GENERAL_CHAT": # Only update on first valid intent
+                            intent_header = chunk_intent
+                            confidence_header = chunk_confidence
+                        yield text_chunk
                 
                 # Stream audio from TTS
-                audio_stream = tts_service.text_to_speech_stream(text_stream, voice_id=voice_id)
+                audio_stream = tts_service.text_to_speech_stream(text_generator(), voice_id=voice_id)
                 
                 # Yield audio chunks
                 for audio_chunk in audio_stream:
@@ -202,6 +228,8 @@ async def ingest_audio_stream(
             media_type="audio/mpeg",
             headers={
                 "X-Transcript": transcript,  # Send transcript in header
+                "X-Intent": intent_header,  # Intent classification
+                "X-Confidence": str(confidence_header),  # Classification confidence
                 "Cache-Control": "no-cache",
             }
         )

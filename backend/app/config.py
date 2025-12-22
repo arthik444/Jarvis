@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     # ElevenLabs configuration for Text-to-Speech
     elevenlabs_api_key: str | None = None
     elevenlabs_voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Default: Rachel voice
+    
+    # Google Calendar configuration
+    google_calendar_id: str = "primary"  # Default to primary calendar
+    
+    # Google OAuth configuration for Calendar
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: str | None = None
+    google_oauth_redirect_uri: str = "http://localhost:8000/auth/google/callback"
 
     class Config:
         env_file = ".env"
