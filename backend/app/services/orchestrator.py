@@ -1,7 +1,7 @@
 """Orchestrator service for intent routing and handler coordination"""
 import logging
 from functools import lru_cache
-from typing import Any, Dict
+from typing import Any, Dict, AsyncGenerator, Tuple, Optional, AsyncGenerator, Tuple, Optional
 from datetime import datetime, timedelta
 
 from app.services.gemini import get_gemini_service
@@ -286,27 +286,78 @@ Natural:"""
 
     async def _handle_get_weather(self, transcript: str) -> Dict[str, Any]:
         """
-        Handle weather queries with mock data.
-        
-        Args:
-            transcript: User's weather query
-            
-        Returns:
-            Mock weather data response
+        Handle weather requests using Gemini with Google Search grounding.
+        Includes 15-minute caching for performance.
         """
         logger.info("Handler: GET_WEATHER")
-        return {
-            "type": "weather",
-            "data": {
-                "location": "San Francisco",
-                "temperature": 72,
-                "unit": "fahrenheit",
-                "condition": "Sunny",
-                "humidity": 65,
-                "wind_speed": 8,
-            },
-            "message": "It's currently 72°F and sunny in San Francisco with light winds.",
-        }
+        
+        try:
+            from app.services.weather_tool import get_weather_tool
+            
+            # Extract location from transcript (simple keyword detection)
+            location = self._extract_location(transcript)
+            
+            # Get weather tool
+            weather_tool = get_weather_tool()
+            
+            # Get weather (auto-location if no city specified)
+            weather = await weather_tool.get_weather(city=location)
+            
+            # Handle errors
+            if weather.get("error"):
+                return {
+                    "type": "weather",
+                    "data": {},
+                    "message": f"I couldn't get the weather for {location}. Please try another location."
+                }
+            
+            # Format response message
+            message = f"""The weather in {weather['location']} is {weather['temperature_c']}°C 
+({weather['temperature_f']}°F). {weather['condition']}."""
+            
+            # Add optional details if available
+            if 'humidity' in weather:
+                message += f" Humidity is {weather['humidity']}%."
+            if 'wind_speed_kmh' in weather:
+                message += f" Wind speed is {weather['wind_speed_kmh']} km/h."
+            
+            return {
+                "type": "weather",
+                "data": weather,
+                "message": message
+            }
+            
+        except Exception as e:
+            logger.error(f"Weather handler failed: {e}")
+            return {
+                "type": "weather",
+                "data": {"error": str(e)},
+                "message": "I'm having trouble getting the weather right now. Please try again."
+            }
+    
+    def _extract_location(self, transcript: str) -> Optional[str]:
+        """Extract location from weather query using simple keyword detection."""
+        text = transcript.lower()
+        
+        # Common weather query patterns
+        patterns = [
+            "weather in ",
+            "weather for ",
+            "what's the weather in ",
+            "how's the weather in ",
+            "tell me the weather in ",
+            "what is the weather in "
+        ]
+        
+        for pattern in patterns:
+            if pattern in text:
+                # Extract everything after the pattern
+                location = text.split(pattern, 1)[1].strip()
+                # Remove trailing punctuation
+                location = location.rstrip('?!.')
+                return location if location else None
+        
+        return None
 
     async def _handle_add_task(self, transcript: str) -> Dict[str, Any]:
         """
