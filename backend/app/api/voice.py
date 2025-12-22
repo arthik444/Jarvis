@@ -108,7 +108,15 @@ async def ingest_audio(
                         voice_id=voice_id
                     )
                 except ValueError as e:
-                    logger.warning(f"TTS not configured: {e}")
+                    error_msg = str(e)
+                    if "quota" in error_msg.lower():
+                        logger.error(f"TTS quota exceeded: {e}")
+                        # Don't fail the request, just skip TTS
+                        audio_base64 = None
+                        # Prepend quota warning to response
+                        ai_response = "[TTS Quota Exceeded] " + ai_response
+                    else:
+                        logger.warning(f"TTS not configured: {e}")
                 except Exception as e:
                     logger.error(f"TTS generation failed: {e}")
                     

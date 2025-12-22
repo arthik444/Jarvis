@@ -61,6 +61,11 @@ class TTSService:
             return audio_bytes
             
         except Exception as e:
+            # Check for quota exceeded error
+            error_str = str(e)
+            if "quota_exceeded" in error_str or "401" in error_str:
+                logger.error(f"ElevenLabs quota exceeded: {e}")
+                raise ValueError("ElevenLabs quota exceeded. Please upgrade your plan or add credits.")
             logger.error(f"TTS generation failed: {e}")
             raise
 
