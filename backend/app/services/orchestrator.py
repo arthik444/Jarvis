@@ -1546,16 +1546,12 @@ Examples:
                     "message": result["answer"]
                 }
             
-            # Format response message with citations
+            # Format response - keep answer and citations separate
             answer = result["answer"]
             citations = result.get("citations", [])
             
-            # Add citations to message if available
-            if citations:
-                citation_text = ", ".join(citations)
-                message = f"{answer} Sources: {citation_text}"
-            else:
-                message = answer
+            # Message contains only the answer (UI will display citations separately)
+            message = answer
             
             return {
                 "type": "educational",

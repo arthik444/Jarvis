@@ -182,14 +182,21 @@ class LearningTool:
         
         # Build prompt with search context if available
         if search_context:
-            prompt = f"""{level_instruction}
+            prompt = f"""Answer this question directly and confidently using the search results below.
 
 Question: {question}
 
-Web search results:
+Search results:
 {search_context}
 
-Provide a direct, confident answer in 1-2 sentences based on the web search results. Be concise and factual - you're a helpful personal assistant. Simply state the answer without hedging."""
+Instructions:
+- Give a direct factual answer in 1-2 sentences
+- Do NOT use phrases like: "the search results say", "according to sources", "I'm seeing", "sources indicate", "appears to be"
+- State facts confidently as if you know them
+- Do not comment on the sources or their reliability
+- Just answer the question directly
+
+Answer:"""
         else:
             # Fallback to Gemini's knowledge
             prompt = f"""{level_instruction}
@@ -213,9 +220,10 @@ def get_learning_tool():
     """Get or create learning tool singleton."""
     global _learning_tool_instance
     
-    if _learning_tool_instance is None:
-        from app.services.gemini import get_gemini_service
-        gemini_service = get_gemini_service()
-        _learning_tool_instance = LearningTool(gemini_service.model)
+    # Always recreate to ensure fresh config/API key loading
+    # This is important for development when .env changes
+    from app.services.gemini import get_gemini_service
+    gemini_service = get_gemini_service()
+    _learning_tool_instance = LearningTool(gemini_service.model)
     
     return _learning_tool_instance
