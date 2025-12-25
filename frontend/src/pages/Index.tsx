@@ -1,0 +1,470 @@
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Settings, Mic } from 'lucide-react';
+import { JarvisOrb, OrbState, OrbContext } from '@/components/JarvisOrb';
+import { AcknowledgmentCard, CardType } from '@/components/AcknowledgmentCard';
+import { LiveUnderstanding } from '@/components/LiveUnderstanding';
+import { StatusIndicator } from '@/components/StatusIndicator';
+import { SettingsPanel } from '@/components/SettingsPanel';
+import { TasksView } from '@/components/TasksView';
+import { ProfileView } from '@/components/ProfileView';
+import { voiceAPI, profileAPI } from '@/services/api';
+import type { Voice } from '@/types/api';
+
+interface Card {
+  id: string;
+  type: CardType;
+  title: string;
+  subtitle?: string;
+}
+
+export default function Index() {
+  const [orbState, setOrbState] = useState<OrbState>('idle');
+  const [orbContext, setOrbContext] = useState<OrbContext>('default');
+  const [cards, setCards] = useState<Card[]>([]);
+  const [showUnderstanding, setShowUnderstanding] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const [voices, setVoices] = useState<Voice[]>([]);
+  const [selectedVoice, setSelectedVoice] = useState<string>('');
+  const [currentTranscript, setCurrentTranscript] = useState('');
+  const [entities, setEntities] = useState<any[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
+  const [currentView, setCurrentView] = useState<'main' | 'tasks' | 'profile'>('main');
+  const [isRecording, setIsRecording] = useState(false);
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  // Load voices and profile on mount
+  useEffect(() => {
+    loadVoices();
+  }, []);
+
+  const loadVoices = async () => {
+    try {
+      const data = await profileAPI.getVoices();
+      setVoices(data.voices);
+      setSelectedVoice(data.default);
+      
+      // Also load user's preferred voice
+      try {
+        const profile = await profileAPI.getProfile();
+        if (profile.preferred_voice) {
+          setSelectedVoice(profile.preferred_voice);
+        }
+      } catch (err) {
+        console.log('Profile not loaded, using default voice');
+      }
+    } catch (err) {
+      console.error('Failed to load voices:', err);
+      setSelectedVoice('21m00Tcm4TlvDq8ikWAM'); // Default fallback
+    }
+  };
+
+  // Simulate audio level changes when speaking
+  useEffect(() => {
+    if (orbState === 'speaking') {
+      const interval = setInterval(() => {
+        setAudioLevel(0.3 + Math.random() * 0.7);
+      }, 100);
+      return () => clearInterval(interval);
+    } else {
+      setAudioLevel(0);
+    }
+  }, [orbState]);
+
+  // Auto-dismiss cards after delay
+  useEffect(() => {
+    if (cards.length > 0) {
+      const timer = setTimeout(() => {
+        setCards((prev) => prev.slice(1));
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [cards]);
+
+  const startRecording = async () => {
+    console.log('🎤 Starting recording...');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      console.log('✅ Got media stream');
+      
+      // Create MediaRecorder with proper options
+      const options = { mimeType: 'audio/webm' };
+      const recorder = new MediaRecorder(stream, options);
+      console.log('✅ Created MediaRecorder');
+
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+
+      recorder.ondataavailable = (event) => {
+        console.log('📦 Data available:', event.data.size, 'bytes');
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        console.log('⏹️ Recording stopped, chunks:', audioChunksRef.current.length);
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        console.log('📦 Created blob:', audioBlob.size, 'bytes');
+        
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop());
+        
+        // Only upload if we have substantial audio data
+        if (audioBlob.size > 1000) {
+          await uploadAudio(audioBlob);
+        } else {
+          console.warn('⚠️ Audio too short, not uploading');
+          setOrbState('idle');
+          setShowUnderstanding(false);
+          setCards((prev) => [...prev, {
+            id: Date.now().toString(),
+            type: 'info',
+            title: 'Recording too short',
+            subtitle: 'Please hold the button longer while speaking',
+          }]);
+        }
+      };
+
+      // Start recording with 100ms timeslice to ensure data is captured
+      recorder.start(100);
+      console.log('▶️ MediaRecorder started, state:', recorder.state);
+    } catch (err) {
+      console.error('❌ Error starting recording:', err);
+      setOrbState('idle');
+      setShowUnderstanding(false);
+      
+      // Show error card
+      setCards((prev) => [...prev, {
+        id: Date.now().toString(),
+        type: 'info',
+        title: 'Microphone access denied or unavailable',
+        subtitle: 'Please allow microphone permissions',
+      }]);
+    }
+  };
+
+  const stopRecording = () => {
+    console.log('🛑 Stop recording called');
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      console.log('⏸️ Stopping MediaRecorder');
+      mediaRecorderRef.current.stop();
+    } else {
+      console.log('⚠️ MediaRecorder not recording, state:', mediaRecorderRef.current?.state);
+    }
+  };
+
+  const uploadAudio = async (audioBlob: Blob) => {
+    setOrbState('thinking');
+    setShowUnderstanding(false);
+    
+    try {
+      const result = await voiceAPI.ingestAudio(audioBlob, selectedVoice);
+      
+      // Only process if we got a valid transcript
+      if (!result.transcript || result.transcript.trim() === '') {
+        console.warn('⚠️ Empty transcript received');
+        setOrbState('idle');
+        setCards((prev) => [...prev, {
+          id: Date.now().toString(),
+          type: 'info',
+          title: 'No speech detected',
+          subtitle: 'Please speak more clearly or check your microphone',
+        }]);
+        return;
+      }
+
+      console.log('📝 Transcript:', result.transcript);
+      console.log('🤖 AI Response:', result.ai_response);
+
+      // Change context based on intent
+      if (result.intent) {
+        const intentLower = result.intent.toLowerCase();
+        if (intentLower.includes('calendar')) {
+          setOrbContext('default');
+        } else if (intentLower.includes('task')) {
+          setOrbContext('focus');
+        } else if (intentLower.includes('weather')) {
+          setOrbContext('weather');
+        } else if (intentLower.includes('learn') || intentLower.includes('remember')) {
+          setOrbContext('memory');
+        }
+      }
+
+      // Add acknowledgment card
+      if (result.ai_response) {
+        const intentLower = result.intent?.toLowerCase() || '';
+        const cardType: CardType = intentLower.includes('task') ? 'task' :
+          intentLower.includes('calendar') ? 'calendar' :
+          intentLower.includes('weather') ? 'weather' :
+          intentLower.includes('learn') || intentLower.includes('remember') ? 'memory' : 'info';
+
+        setCards([{
+          id: Date.now().toString(),
+          type: cardType,
+          title: result.ai_response.substring(0, 100) + (result.ai_response.length > 100 ? '...' : ''),
+          subtitle: result.intent || undefined,
+        }]);
+      }
+
+      setOrbState('speaking');
+      
+      // Play audio if available
+      if (result.audio_base64) {
+        try {
+          const audioData = atob(result.audio_base64);
+          const audioArray = new Uint8Array(audioData.length);
+          for (let i = 0; i < audioData.length; i++) {
+            audioArray[i] = audioData.charCodeAt(i);
+          }
+          const audioBlob = new Blob([audioArray], { type: 'audio/mpeg' });
+          const audioUrl = URL.createObjectURL(audioBlob);
+          const audio = new Audio(audioUrl);
+          
+          audio.onended = () => {
+            setOrbState('idle');
+            URL.revokeObjectURL(audioUrl);
+          };
+          
+          audio.onerror = () => {
+            setOrbState('idle');
+            URL.revokeObjectURL(audioUrl);
+          };
+          
+          audio.play();
+        } catch (err) {
+          console.error('Error playing audio:', err);
+          setTimeout(() => setOrbState('idle'), 2500);
+        }
+      } else {
+        // No audio, just show the text response for a bit
+        setTimeout(() => setOrbState('idle'), 2500);
+      }
+    } catch (err) {
+      console.error('Error uploading audio:', err);
+      setOrbState('idle');
+      
+      // Show error card
+      setCards([{
+        id: Date.now().toString(),
+        type: 'info',
+        title: 'Sorry, I encountered an error processing your request.',
+        subtitle: 'Please try again',
+      }]);
+    }
+  };
+
+  const handleMicClick = useCallback(() => {
+    if (isRecording) {
+      // Stop recording
+      console.log('🔵 Stopping recording...');
+      stopRecording();
+      setIsRecording(false);
+    } else {
+      // Start recording
+      console.log('🔴 Starting recording...');
+      setOrbState('listening');
+      setShowUnderstanding(true);
+      setCurrentTranscript('🎤 Recording... Click again to stop');
+      setIsRecording(true);
+      startRecording();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRecording]);
+
+  const removeCard = useCallback((id: string) => {
+    setCards((prev) => prev.filter((card) => card.id !== id));
+  }, []);
+
+  const handleNavigate = (view: 'tasks' | 'profile') => {
+    setCurrentView(view);
+  };
+
+  // Show alternate views
+  if (currentView === 'tasks') {
+    return <TasksView onBack={() => setCurrentView('main')} />;
+  }
+
+  if (currentView === 'profile') {
+    return <ProfileView onBack={() => setCurrentView('main')} />;
+  }
+
+  return (
+    <div className="relative min-h-screen overflow-hidden bg-background">
+      {/* Background gradient layers */}
+      <div className="absolute inset-0 pointer-events-none">
+        {/* Base radial gradient */}
+        <div
+          className="absolute inset-0"
+          style={{
+            background: 'radial-gradient(ellipse at 50% 40%, hsl(220, 25%, 8%) 0%, hsl(230, 25%, 5%) 60%, hsl(230, 30%, 3%) 100%)',
+          }}
+        />
+        
+        {/* Subtle grid pattern */}
+        <div
+          className="absolute inset-0 opacity-[0.02]"
+          style={{
+            backgroundImage: `
+              linear-gradient(hsl(185, 85%, 50%) 1px, transparent 1px),
+              linear-gradient(90deg, hsl(185, 85%, 50%) 1px, transparent 1px)
+            `,
+            backgroundSize: '60px 60px',
+          }}
+        />
+
+        {/* Ambient orb glow */}
+        <motion.div
+          className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full"
+          style={{
+            background: 'radial-gradient(circle, hsl(185, 85%, 50% / 0.08) 0%, transparent 60%)',
+          }}
+          animate={{
+            scale: [1, 1.1, 1],
+            opacity: [0.5, 0.8, 0.5],
+          }}
+          transition={{
+            duration: 8,
+            repeat: Infinity,
+            ease: 'easeInOut',
+          }}
+        />
+      </div>
+
+      {/* Header with status and settings */}
+      <header className="absolute top-0 left-0 right-0 z-10 p-6 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <h1 className="text-lg font-medium tracking-wide text-foreground/90">
+            JARVIS
+          </h1>
+          <StatusIndicator state={orbState} />
+        </div>
+        <button 
+          onClick={() => setShowSettings(true)}
+          className="p-2 rounded-lg hover:bg-muted/30 transition-colors"
+        >
+          <Settings size={20} className="text-muted-foreground" />
+        </button>
+      </header>
+
+      {/* Settings Panel */}
+      <AnimatePresence>
+        {showSettings && (
+          <SettingsPanel
+            isOpen={showSettings}
+            onClose={() => setShowSettings(false)}
+            onNavigate={handleNavigate}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Main content area */}
+      <main className="relative flex flex-col items-center justify-center min-h-screen px-6">
+        {/* Central orb */}
+        <div className="relative flex items-center justify-center mb-16">
+          <JarvisOrb
+            state={orbState}
+            context={orbContext}
+            audioLevel={audioLevel}
+          />
+        </div>
+
+        {/* Live understanding panel */}
+        <div className="absolute bottom-40 left-1/2 -translate-x-1/2">
+          <LiveUnderstanding
+            isVisible={showUnderstanding}
+            intent={currentTranscript}
+            entities={entities}
+          />
+        </div>
+      </main>
+
+      {/* Microphone button */}
+      <div className="fixed bottom-12 left-1/2 -translate-x-1/2 z-20">
+        <button
+          onClick={handleMicClick}
+          className={`relative flex items-center justify-center w-16 h-16 rounded-full glass-panel cursor-pointer select-none transition-all ${
+            isRecording ? 'scale-110' : 'hover:scale-105'
+          }`}
+          style={{
+            borderWidth: 2,
+            borderColor: isRecording ? 'hsl(185, 85%, 50%)' : 'hsl(220, 20%, 18%)',
+          }}
+        >
+          {/* Glow effect when active */}
+          {isRecording && (
+            <>
+              <motion.div
+                className="absolute inset-0 rounded-full"
+                style={{
+                  background: 'radial-gradient(circle, hsl(185, 85%, 50% / 0.3) 0%, transparent 70%)',
+                  filter: 'blur(10px)',
+                }}
+                animate={{
+                  scale: [1, 1.5, 1],
+                  opacity: [0.5, 0.8, 0.5],
+                }}
+                transition={{
+                  duration: 1.5,
+                  repeat: Infinity,
+                  ease: 'easeInOut',
+                }}
+              />
+              <motion.div
+                className="absolute inset-0 rounded-full"
+                style={{
+                  boxShadow: '0 0 30px hsl(185, 85%, 50% / 0.5), 0 0 60px hsl(185, 85%, 50% / 0.3)',
+                }}
+                animate={{
+                  opacity: [0.6, 1, 0.6],
+                }}
+                transition={{
+                  duration: 1,
+                  repeat: Infinity,
+                  ease: 'easeInOut',
+                }}
+              />
+            </>
+          )}
+
+          {/* Microphone icon */}
+          <motion.div
+            style={{
+              color: isRecording ? 'hsl(185, 85%, 50%)' : 'hsl(210, 20%, 98%)',
+            }}
+          >
+            <Mic size={24} />
+          </motion.div>
+        </button>
+      </div>
+
+      {/* Acknowledgment cards */}
+      <div className="fixed right-6 top-24 z-10 flex flex-col gap-3">
+        <AnimatePresence mode="popLayout">
+          {cards.map((card, index) => (
+            <AcknowledgmentCard
+              key={card.id}
+              type={card.type}
+              title={card.title}
+              subtitle={card.subtitle}
+              index={index}
+              onDismiss={() => removeCard(card.id)}
+            />
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* Context indicator */}
+      <motion.div
+        className="fixed bottom-6 left-6 text-[10px] tracking-widest text-muted-foreground/50 text-mono"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 1 }}
+      >
+        CONTEXT: {orbContext.toUpperCase()}
+      </motion.div>
+    </div>
+  );
+}
