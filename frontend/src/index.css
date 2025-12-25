@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 230 25% 5%;
+    --foreground: 210 20% 98%;
+    --card: 220 25% 8%;
+    --card-foreground: 210 20% 98%;
+    --popover: 220 25% 8%;
+    --popover-foreground: 210 20% 98%;
+    --primary: 185 85% 50%;
+    --primary-foreground: 220 25% 5%;
+    --secondary: 180 75% 45%;
+    --secondary-foreground: 210 20% 98%;
+    --muted: 220 20% 20%;
+    --muted-foreground: 210 20% 65%;
+    --accent: 185 85% 50%;
+    --accent-foreground: 220 25% 5%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 220 20% 18%;
+    --input: 220 20% 18%;
+    --ring: 185 85% 50%;
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+}
+
+@layer utilities {
+  .glass-panel {
+    @apply bg-card/40 backdrop-blur-md border border-border/50;
+  }
+  
+  .glass-panel-hover {
+    @apply hover:bg-card/60 hover:border-border/80 transition-all duration-200;
+  }
+  
+  .text-mono {
+    @apply font-mono;
+  }
+  
+  .glow-primary {
+    box-shadow: 0 0 20px hsl(var(--primary) / 0.3),
+                0 0 40px hsl(var(--primary) / 0.1);
+  }
+  
+  .glow-secondary {
+    box-shadow: 0 0 20px hsl(var(--secondary) / 0.3),
+                0 0 40px hsl(var(--secondary) / 0.1);
+  }
+}
