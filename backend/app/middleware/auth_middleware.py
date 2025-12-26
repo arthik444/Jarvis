@@ -58,6 +58,7 @@ class AuthMiddleware:
 async def get_current_user(request: Request) -> str:
     """
     FastAPI dependency to get current authenticated user ID.
+    Supports both Authorization header and 'token' query parameter.
     
     Args:
         request: FastAPI request object
@@ -70,10 +71,16 @@ async def get_current_user(request: Request) -> str:
     """
     auth_header = request.headers.get("Authorization")
     
+    # Check query params if header is missing (useful for redirects)
+    if not auth_header:
+        token_param = request.query_params.get("token")
+        if token_param:
+            auth_header = f"Bearer {token_param}"
+    
     if not auth_header:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header required"
+            detail="Authorization header or token query parameter required"
         )
     
     user_info = await AuthMiddleware.verify_token(auth_header)

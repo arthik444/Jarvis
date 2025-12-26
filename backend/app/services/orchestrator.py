@@ -280,10 +280,10 @@ class OrchestratorService:
             "DELETE_TASK": lambda t: self._handle_delete_task(t, user_id),
             "LIST_TASKS": lambda t: self._handle_list_tasks(t, user_id),
             "GET_TASK_REMINDERS": lambda t: self._handle_get_task_reminders(t, user_id),
-            "DAILY_SUMMARY": self._handle_daily_summary,
-            "CREATE_CALENDAR_EVENT": self._handle_create_calendar_event,
-            "UPDATE_CALENDAR_EVENT": self._handle_update_calendar_event,
-            "DELETE_CALENDAR_EVENT": self._handle_delete_calendar_event,
+            "DAILY_SUMMARY": lambda t: self._handle_daily_summary(t, user_id),
+            "CREATE_CALENDAR_EVENT": lambda t: self._handle_create_calendar_event(t, user_id),
+            "UPDATE_CALENDAR_EVENT": lambda t: self._handle_update_calendar_event(t, user_id),
+            "DELETE_CALENDAR_EVENT": lambda t: self._handle_delete_calendar_event(t, user_id),
             "LEARN": self._handle_learn,
             "GET_NEWS": self._handle_news,
         }
@@ -1065,24 +1065,25 @@ Examples:
                 "message": "I had trouble getting your reminders."
             }
 
-    async def _handle_daily_summary(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_daily_summary(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Handle daily summary requests with real calendar data.
         Supports date references like "today", "tomorrow", "next Monday".
         
         Args:
             transcript: User's summary request
+            user_id: User identifier for data isolation
             
         Returns:
             Daily summary with calendar events
         """
-        logger.info("Handler: DAILY_SUMMARY")
+        logger.info(f"Handler: DAILY_SUMMARY for user {user_id}")
         
         try:
             # Try to get real calendar events
             from app.services.calendar_tool import get_calendar_tool
             
-            calendar_tool = get_calendar_tool()
+            calendar_tool = get_calendar_tool(user_id=user_id)
             
             # Parse date range from transcript
             start_date, end_date = self._parse_date_range(transcript)
@@ -1211,23 +1212,24 @@ Examples:
             "message": "Today you completed 5 tasks and attended 2 meetings. Great progress!",
         }
 
-    async def _handle_create_calendar_event(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_create_calendar_event(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Handle calendar event creation requests.
         
         Args:
             transcript: User's create request
+            user_id: User identifier for data isolation
             
         Returns:
             Creation confirmation or error
         """
-        logger.info("Handler: CREATE_CALENDAR_EVENT")
+        logger.info(f"Handler: CREATE_CALENDAR_EVENT for user {user_id}")
         
         try:
             from app.services.calendar_tool import get_calendar_tool
             from datetime import datetime, timedelta
             
-            calendar_tool = get_calendar_tool()
+            calendar_tool = get_calendar_tool(user_id=user_id)
             
             # Step 2: Extract event details using dedicated method
             logger.info(f"Extracting event details from: {transcript}")
@@ -1305,23 +1307,24 @@ Examples:
                 "message": "I had trouble creating that calendar event. Please try again."
             }
 
-    async def _handle_update_calendar_event(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_update_calendar_event(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Handle calendar event update requests.
         
         Args:
             transcript: User's update request
+            user_id: User identifier for data isolation
             
         Returns:
             Update confirmation or error
         """
-        logger.info("Handler: UPDATE_CALENDAR_EVENT")
+        logger.info(f"Handler: UPDATE_CALENDAR_EVENT for user {user_id}")
         
         try:
             from app.services.calendar_tool import get_calendar_tool
             from datetime import datetime, timedelta
             
-            calendar_tool = get_calendar_tool()
+            calendar_tool = get_calendar_tool(user_id=user_id)
             
             # Step 2: Extract update details
             logger.info(f"Extracting update details from: {transcript}")
@@ -1425,22 +1428,23 @@ Examples:
                 "message": "I had trouble updating that calendar event. Please try again."
             }
 
-    async def _handle_delete_calendar_event(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_delete_calendar_event(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Handle calendar event deletion requests.
         
         Args:
             transcript: User's delete request
+            user_id: User identifier for data isolation
             
         Returns:
             Deletion confirmation or error
         """
-        logger.info("Handler: DELETE_CALENDAR_EVENT")
+        logger.info(f"Handler: DELETE_CALENDAR_EVENT for user {user_id}")
         
         try:
             from app.services.calendar_tool import get_calendar_tool
             
-            calendar_tool = get_calendar_tool()
+            calendar_tool = get_calendar_tool(user_id=user_id)
             
             # Step 2: Extract event name from transcript
             # Use simple extraction - just pull event name from natural language

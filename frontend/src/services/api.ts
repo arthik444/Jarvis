@@ -226,3 +226,29 @@ export const profileAPI = {
     return response.json();
   },
 };
+
+// Calendar API
+export const calendarAPI = {
+  async checkStatus(): Promise<{ authorized: boolean; calendar_connected: boolean }> {
+    const token = await getAuthToken();
+    const headers: HeadersInit = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`${API_BASE_URL.replace('/api', '')}/auth/calendar/status`, {
+      headers,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Calendar API error: ${response.statusText}`);
+    }
+
+    return response.json();
+  },
+
+  async getConnectUrl(): Promise<string> {
+    const token = await getAuthToken();
+    return `${API_BASE_URL.replace('/api', '')}/auth/google/calendar?token=${token}`;
+  },
+};
