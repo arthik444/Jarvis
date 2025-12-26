@@ -52,6 +52,31 @@ export const voiceAPI = {
   },
 };
 
+// Chat API
+export const chatAPI = {
+  async sendMessage(message: string, voiceId?: string): Promise<any> {
+    const token = await getAuthToken();
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`${API_BASE_URL}/chat/send`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ message, voice_id: voiceId }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Chat API error: ${response.statusText}`);
+    }
+
+    return response.json();
+  },
+};
+
 // Tasks API
 export const tasksAPI = {
   async listTasks(status?: string): Promise<Task[]> {
@@ -60,7 +85,13 @@ export const tasksAPI = {
       url.searchParams.append('status', status);
     }
 
-    const response = await fetch(url.toString());
+    const token = await getAuthToken();
+    const headers: HeadersInit = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(url.toString(), { headers });
     if (!response.ok) {
       throw new Error(`Tasks API error: ${response.statusText}`);
     }
@@ -69,7 +100,13 @@ export const tasksAPI = {
   },
 
   async getTask(taskId: string): Promise<Task> {
-    const response = await fetch(`${API_BASE_URL}/tasks/${taskId}`);
+    const token = await getAuthToken();
+    const headers: HeadersInit = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`${API_BASE_URL}/tasks/${taskId}`, { headers });
     if (!response.ok) {
       throw new Error(`Tasks API error: ${response.statusText}`);
     }
@@ -78,9 +115,17 @@ export const tasksAPI = {
   },
 
   async createTask(request: CreateTaskRequest): Promise<Task> {
+    const token = await getAuthToken();
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const response = await fetch(`${API_BASE_URL}/tasks`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(request),
     });
 
@@ -92,9 +137,17 @@ export const tasksAPI = {
   },
 
   async updateTask(taskId: string, updates: UpdateTaskRequest): Promise<Task> {
+    const token = await getAuthToken();
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const response = await fetch(`${API_BASE_URL}/tasks/${taskId}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(updates),
     });
 
@@ -106,8 +159,15 @@ export const tasksAPI = {
   },
 
   async deleteTask(taskId: string): Promise<void> {
+    const token = await getAuthToken();
+    const headers: HeadersInit = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const response = await fetch(`${API_BASE_URL}/tasks/${taskId}`, {
       method: 'DELETE',
+      headers,
     });
 
     if (!response.ok) {
@@ -118,11 +178,17 @@ export const tasksAPI = {
 
 // Profile API
 export const profileAPI = {
-  async getProfile(userId: string = 'default'): Promise<Profile> {
-    const url = new URL(`${API_BASE_URL}/profile`);
-    url.searchParams.append('user_id', userId);
+  async getProfile(): Promise<Profile> {
+    const token = await getAuthToken();
+    const headers: HeadersInit = {};
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
 
-    const response = await fetch(url.toString());
+    const response = await fetch(`${API_BASE_URL}/profile`, {
+      headers,
+    });
+
     if (!response.ok) {
       throw new Error(`Profile API error: ${response.statusText}`);
     }
@@ -130,13 +196,18 @@ export const profileAPI = {
     return response.json();
   },
 
-  async updateProfile(updates: ProfileUpdate, userId: string = 'default'): Promise<Profile> {
-    const url = new URL(`${API_BASE_URL}/profile`);
-    url.searchParams.append('user_id', userId);
+  async updateProfile(updates: ProfileUpdate): Promise<Profile> {
+    const token = await getAuthToken();
+    const headers: HeadersInit = {
+      'Content-Type': 'application/json',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
 
-    const response = await fetch(url.toString(), {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await fetch(`${API_BASE_URL}/profile`, {
+      method: 'PUT',
+      headers,
       body: JSON.stringify(updates),
     });
 
@@ -150,9 +221,8 @@ export const profileAPI = {
   async getVoices(): Promise<VoicesResponse> {
     const response = await fetch(`${API_BASE_URL}/profile/voices`);
     if (!response.ok) {
-      throw new Error(`Voice list API error: ${response.statusText}`);
+      throw new Error(`Voices API error: ${response.statusText}`);
     }
-
     return response.json();
   },
 };

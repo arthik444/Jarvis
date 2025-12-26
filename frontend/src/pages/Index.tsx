@@ -8,7 +8,7 @@ import { StatusIndicator } from '@/components/StatusIndicator';
 import { SettingsPanel } from '@/components/SettingsPanel';
 import { TasksView } from '@/components/TasksView';
 import { ProfileView } from '@/components/ProfileView';
-import { voiceAPI, profileAPI } from '@/services/api';
+import { voiceAPI, chatAPI, profileAPI } from '@/services/api';
 
 interface Card {
   id: string;
@@ -32,6 +32,8 @@ export default function Index() {
   const [showSettings, setShowSettings] = useState(false);
   const [currentView, setCurrentView] = useState<'main' | 'tasks' | 'profile'>('main');
   const [isRecording, setIsRecording] = useState(false);
+  const [textInput, setTextInput] = useState('');
+  const [isTextPanelOpen, setIsTextPanelOpen] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -303,6 +305,97 @@ export default function Index() {
     }
   };
 
+  const handleTextSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = textInput.trim();
+    if (!trimmed) return;
+
+    console.log('📝 Typed command:', trimmed);
+    clearCards(true);
+    setOrbState('thinking');
+    setCurrentTranscript(trimmed);
+    setTextInput('');
+
+    try {
+      const result = await chatAPI.sendMessage(trimmed, selectedVoice);
+
+      if (!result.success) {
+        setOrbState('idle');
+        setCards([{
+          id: Date.now().toString(),
+          type: 'info',
+          title: result.ai_response,
+        }]);
+        return;
+      }
+
+      // Update context based on intent
+      if (result.intent) {
+        const intentLower = result.intent.toLowerCase();
+        if (intentLower.includes('calendar') || intentLower.includes('summary')) setOrbContext('default');
+        else if (intentLower.includes('task')) setOrbContext('focus');
+        else if (intentLower.includes('weather')) setOrbContext('weather');
+        else if (intentLower.includes('learn') || intentLower.includes('news')) setOrbContext('memory');
+      }
+
+      // Add card
+      if (result.ai_response) {
+        const intentLower = result.intent?.toLowerCase() || '';
+        let cardType: CardType = 'info';
+        if (intentLower.includes('weather')) cardType = 'weather';
+        else if (intentLower.includes('task')) cardType = 'task';
+        else if (intentLower.includes('calendar')) cardType = 'calendar';
+        else if (intentLower.includes('learn')) cardType = 'memory';
+        else if (intentLower.includes('news')) cardType = 'news';
+
+        setCards([{
+          id: Date.now().toString(),
+          type: cardType,
+          title: result.ai_response,
+          subtitle: result.intent,
+          data: result.data,
+        }]);
+
+        // Handle citations
+        if (cardType === 'memory' && result.data?.citations) {
+          const citations = result.data.citations.map((citation: any, idx: number) => ({
+            id: `cit-${Date.now()}-${idx}`,
+            type: 'info' as CardType,
+            title: typeof citation === 'string' ? citation : citation.title || citation.url,
+            isCitation: true,
+            data: { url: typeof citation === 'string' ? citation : citation.url }
+          }));
+          setCitationCards(citations);
+        }
+      }
+
+      // Play TTS
+      if (result.audio_base64) {
+        setOrbState('speaking');
+        const byteCharacters = atob(result.audio_base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const audioBlob = new Blob([byteArray], { type: 'audio/mpeg' });
+        const audio = new Audio(URL.createObjectURL(audioBlob));
+        audio.onended = () => setOrbState('idle');
+        audio.play().catch(() => setOrbState('idle'));
+      } else {
+        setOrbState('idle');
+      }
+    } catch (err) {
+      console.error('Text error:', err);
+      setOrbState('idle');
+      setCards([{
+        id: Date.now().toString(),
+        type: 'info',
+        title: 'Error processing command',
+      }]);
+    }
+  };
+
   const handleMicClick = useCallback(() => {
     if (isRecording) {
       // Stop recording
@@ -488,6 +581,65 @@ export default function Index() {
             <Mic size={24} />
           </motion.div>
         </button>
+      </div>
+
+      {/* Collapsible Text Input Panel (bottom-right) */}
+      <div className="fixed bottom-12 right-6 z-20">
+        {!isTextPanelOpen ? (
+          <button
+            onClick={() => setIsTextPanelOpen(true)}
+            className="flex items-center justify-center w-12 h-12 rounded-full glass-panel hover:scale-105 transition-all"
+            style={{
+              borderWidth: 2,
+              borderColor: 'hsl(220, 20%, 18%)',
+            }}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="4" width="20" height="16" rx="2" />
+              <path d="M6 8h.01" />
+              <path d="M10 8h.01" />
+              <path d="M14 8h.01" />
+              <path d="M18 8h.01" />
+              <path d="M8 12h.01" />
+              <path d="M12 12h.01" />
+              <path d="M16 12h.01" />
+              <path d="M7 16h10" />
+            </svg>
+          </button>
+        ) : (
+          <motion.div
+            initial={{ opacity: 0, x: 50 }}
+            animate={{ opacity: 1, x: 0 }}
+            className="glass-panel p-4 rounded-2xl w-80"
+          >
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs text-muted-foreground font-medium">TYPE COMMAND</span>
+              <button
+                onClick={() => setIsTextPanelOpen(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <form onSubmit={(e) => { handleTextSubmit(e); setIsTextPanelOpen(false); }}>
+              <input
+                type="text"
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder="Type your command..."
+                disabled={isRecording}
+                autoFocus
+                className="w-full px-4 py-3 rounded-xl bg-background/50 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 disabled:opacity-50"
+              />
+              <div className="mt-2 text-xs text-muted-foreground/70">
+                Press Enter to send
+              </div>
+            </form>
+          </motion.div>
+        )}
       </div>
 
       {/* Left side area for citations */}

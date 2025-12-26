@@ -87,7 +87,7 @@ async def ingest_audio(
                 from app.services.orchestrator import get_orchestrator
                 
                 orchestrator = get_orchestrator()
-                orchestrator_result = await orchestrator.process_transcript(transcript)
+                orchestrator_result = await orchestrator.process_transcript(transcript, user_id)
                 
                 # Extract intent info for response
                 intent_result = {
@@ -216,7 +216,7 @@ async def ingest_audio_stream(
                 
                 # Stream text from orchestrator (handles intent routing)
                 async def text_generator():
-                    async for text_chunk, chunk_intent, chunk_confidence in orchestrator.process_transcript_stream(transcript):
+                    async for text_chunk, chunk_intent, chunk_confidence in orchestrator.process_transcript_stream(transcript, user_id):
                         # Capture intent/confidence from first chunk for headers
                         if intent_header == "GENERAL_CHAT": # Only update on first valid intent
                             intent_header = chunk_intent

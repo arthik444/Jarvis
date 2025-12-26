@@ -50,7 +50,7 @@ class OrchestratorService:
             logger.info(f"Orchestrator: Intent={intent}, Confidence={confidence}")
             
             # Step 4: Route to appropriate handler (extraction happens inside handlers)
-            handler_response = await self._route_to_handler(intent, transcript, confidence, profile, history)
+            handler_response = await self._route_to_handler(intent, transcript, confidence, profile, history, user_id)
             
             # Step 5: Update conversation history for GENERAL_CHAT
             if intent == "GENERAL_CHAT":
@@ -135,7 +135,7 @@ class OrchestratorService:
             else:
                 # For structured intents: return immediate response
                 logger.info(f"Immediate response for {intent} (structured data)")
-                handler_response = await self._route_to_handler(intent, transcript, confidence, profile, history)
+                handler_response = await self._route_to_handler(intent, transcript, confidence, profile, history, user_id)
                 yield handler_response["message"], intent, confidence
             
             # Extract and update profile (non-blocking)
@@ -249,7 +249,7 @@ class OrchestratorService:
         logger.debug(f"History updated for {user_id}: {len(self.conversation_history[user_id])} messages")
     
     async def _route_to_handler(
-        self, intent: str, transcript: str, confidence: float, profile: Dict[str, Any], history: list = None
+        self, intent: str, transcript: str, confidence: float, profile: Dict[str, Any], history: list = None, user_id: str = "default"
     ) -> Dict[str, Any]:
         """
         Route to appropriate handler based on intent.
@@ -260,6 +260,7 @@ class OrchestratorService:
             confidence: Classification confidence
             profile: User profile for context
             history: Conversation history for context
+            user_id: User identifier for data isolation
             
         Returns:
             Handler's structured response
@@ -273,12 +274,12 @@ class OrchestratorService:
         # Handler mapping (note: GENERAL_CHAT needs special handling for history)
         handlers = {
             "GET_WEATHER": self._handle_get_weather,
-            "ADD_TASK": self._handle_add_task,
-            "COMPLETE_TASK": self._handle_complete_task,
-            "UPDATE_TASK": self._handle_update_task,
-            "DELETE_TASK": self._handle_delete_task,
-            "LIST_TASKS": self._handle_list_tasks,
-            "GET_TASK_REMINDERS": self._handle_get_task_reminders,
+            "ADD_TASK": lambda t: self._handle_add_task(t, user_id),
+            "COMPLETE_TASK": lambda t: self._handle_complete_task(t, user_id),
+            "UPDATE_TASK": lambda t: self._handle_update_task(t, user_id),
+            "DELETE_TASK": lambda t: self._handle_delete_task(t, user_id),
+            "LIST_TASKS": lambda t: self._handle_list_tasks(t, user_id),
+            "GET_TASK_REMINDERS": lambda t: self._handle_get_task_reminders(t, user_id),
             "DAILY_SUMMARY": self._handle_daily_summary,
             "CREATE_CALENDAR_EVENT": self._handle_create_calendar_event,
             "UPDATE_CALENDAR_EVENT": self._handle_update_calendar_event,
@@ -536,7 +537,7 @@ Location:"""
             
             return None
 
-    async def _handle_add_task(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_add_task(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Handle task creation requests with priority and due date extraction.
         
@@ -621,7 +622,7 @@ Examples:
                     logger.warning(f"Failed to parse due date '{due_date_str}': {e}")
             
             # Create task in Firestore
-            task_tool = get_task_tool()
+            task_tool = get_task_tool(user_id)
             task = task_tool.add_task(
                 title=title,
                 status="pending",
@@ -654,7 +655,7 @@ Examples:
             }
 
 
-    async def _handle_complete_task(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_complete_task(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Mark task as completed.
         
@@ -684,7 +685,7 @@ Examples:
                 }
             
             # Step 2: Get pending tasks (~50ms)
-            task_tool = get_task_tool()
+            task_tool = get_task_tool(user_id)
             pending_tasks = task_tool.list_tasks(status_filter="pending")
             
             if not pending_tasks:
@@ -720,7 +721,7 @@ Examples:
                 "data": {"error": str(e)},
                 "message": "I had trouble completing that task."
             }
-    async def _handle_update_task(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_update_task(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Update task fields (priority, title, status).
         
@@ -753,7 +754,7 @@ Examples:
                 }
             
             # Step 2: Get all tasks
-            task_tool = get_task_tool()
+            task_tool = get_task_tool(user_id)
             all_tasks = task_tool.list_tasks()
             
             if not all_tasks:
@@ -811,7 +812,7 @@ Examples:
                 "data": {"error": str(e)},
                 "message": "I had trouble updating that task."
             }
-    async def _handle_delete_task(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_delete_task(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Delete task permanently.
         
@@ -841,7 +842,7 @@ Examples:
                 }
             
             # Step 2: Get all tasks (including completed)
-            task_tool = get_task_tool()
+            task_tool = get_task_tool(user_id)
             all_tasks = task_tool.list_tasks()
             
             if not all_tasks:
@@ -886,7 +887,7 @@ Examples:
                 "message": "I had trouble deleting that task."
             }
 
-    async def _handle_list_tasks(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_list_tasks(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """List all pending tasks with optional priority filtering."""
         logger.info("Handler: LIST_TASKS")
         
@@ -905,7 +906,7 @@ Examples:
                 priority_filter = "low"
             
             # Get all pending tasks (simple, no LLM extraction)
-            task_tool = get_task_tool()
+            task_tool = get_task_tool(user_id)
             all_tasks = task_tool.list_tasks(status_filter="pending")
             
             # Apply priority filter if detected
@@ -962,7 +963,7 @@ Examples:
             }
 
 
-    async def _handle_get_task_reminders(self, transcript: str) -> Dict[str, Any]:
+    async def _handle_get_task_reminders(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """Compile and prioritize task reminders."""
         logger.info("Handler: GET_TASK_REMINDERS")
         
@@ -976,7 +977,7 @@ Examples:
             soon_end = (now + timedelta(days=3)).replace(hour=23, minute=59, second=59)
             
             # Get all pending tasks
-            task_tool = get_task_tool()
+            task_tool = get_task_tool(user_id)
             tasks = task_tool.list_tasks(status_filter="pending")
             
             # Categorize
@@ -1091,7 +1092,7 @@ Examples:
             
             # Get tasks for comprehensive summary
             from app.services.task_tool import get_task_tool
-            task_tool = get_task_tool()
+            task_tool = get_task_tool(user_id)
             all_tasks = task_tool.list_tasks(status_filter="pending")
             
             # Categorize tasks by due date
