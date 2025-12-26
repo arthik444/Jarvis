@@ -284,6 +284,7 @@ class OrchestratorService:
             "UPDATE_CALENDAR_EVENT": self._handle_update_calendar_event,
             "DELETE_CALENDAR_EVENT": self._handle_delete_calendar_event,
             "LEARN": self._handle_learn,
+            "GET_NEWS": self._handle_news,
         }
         
         # Handle GENERAL_CHAT specially to pass history
@@ -1570,6 +1571,59 @@ Examples:
                 "data": {"error": str(e)},
                 "message": "I'm having trouble finding information on that right now.",
             }
+    async def _handle_news(self, transcript: str) -> Dict[str, Any]:
+        """
+        Handle news requests using NewsAPI.org.
+        """
+        logger.info("Handler: GET_NEWS")
+        
+        try:
+            from app.services.news_tool import get_news_tool
+            
+            # Extract news query using Gemini for cleaner results
+            prompt = f"""Extract the news topic or search query from this text. 
+Return ONLY the topic. If it's a general request like "latest news", return "top headlines".
+
+Examples:
+- "what's the latest news on tech?" → "technology"
+- "any news about apple?" → "Apple"
+- "give me the daily briefing" → "top headlines"
+
+Query: "{transcript}"
+
+Topic:"""
+
+            response = self.gemini_service.model.generate_content(
+                prompt,
+                generation_config={"temperature": 0.0, "max_output_tokens": 20}
+            )
+            
+            topic = response.text.strip().strip('"\'')
+            if not topic:
+                topic = "top headlines"
+            
+            logger.info(f"📰 News topic: '{topic}'")
+            
+            # Get news tool
+            news_tool = get_news_tool()
+            
+            # Get news briefing
+            result = await news_tool.get_news_briefing(topic)
+            
+            return {
+                "type": "news",
+                "data": result.get("data", {}),
+                "message": result.get("message", f"Here are the latest updates on {topic}.")
+            }
+            
+        except Exception as e:
+            logger.error(f"News handler failed: {e}")
+            return {
+                "type": "news",
+                "data": {"error": str(e)},
+                "message": "I'm having trouble getting the news right now."
+            }
+
 
     async def _handle_general_chat(self, transcript: str, profile: Dict[str, Any] = None, history: list = None) -> Dict[str, Any]:
         """

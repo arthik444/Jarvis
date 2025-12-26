@@ -9,25 +9,26 @@ import { SettingsPanel } from '@/components/SettingsPanel';
 import { TasksView } from '@/components/TasksView';
 import { ProfileView } from '@/components/ProfileView';
 import { voiceAPI, profileAPI } from '@/services/api';
-import type { Voice } from '@/types/api';
 
 interface Card {
   id: string;
   type: CardType;
   title: string;
   subtitle?: string;
+  data?: any;
+  isCitation?: boolean;
 }
 
 export default function Index() {
   const [orbState, setOrbState] = useState<OrbState>('idle');
   const [orbContext, setOrbContext] = useState<OrbContext>('default');
   const [cards, setCards] = useState<Card[]>([]);
+  const [citationCards, setCitationCards] = useState<Card[]>([]);
   const [showUnderstanding, setShowUnderstanding] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
-  const [voices, setVoices] = useState<Voice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<string>('');
   const [currentTranscript, setCurrentTranscript] = useState('');
-  const [entities, setEntities] = useState<any[]>([]);
+  const [entities] = useState<any[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [currentView, setCurrentView] = useState<'main' | 'tasks' | 'profile'>('main');
   const [isRecording, setIsRecording] = useState(false);
@@ -43,9 +44,8 @@ export default function Index() {
   const loadVoices = async () => {
     try {
       const data = await profileAPI.getVoices();
-      setVoices(data.voices);
       setSelectedVoice(data.default);
-      
+
       // Also load user's preferred voice
       try {
         const profile = await profileAPI.getProfile();
@@ -57,7 +57,7 @@ export default function Index() {
       }
     } catch (err) {
       console.error('Failed to load voices:', err);
-      setSelectedVoice('21m00Tcm4TlvDq8ikWAM'); // Default fallback
+      selectedVoice || setSelectedVoice('21m00Tcm4TlvDq8ikWAM'); // Default fallback
     }
   };
 
@@ -73,22 +73,31 @@ export default function Index() {
     }
   }, [orbState]);
 
-  // Auto-dismiss cards after delay
-  useEffect(() => {
-    if (cards.length > 0) {
-      const timer = setTimeout(() => {
-        setCards((prev) => prev.slice(1));
-      }, 5000);
-      return () => clearTimeout(timer);
+  const clearCards = useCallback((clearPersistent = false) => {
+    if (clearPersistent) {
+      // Clear all cards including persistent ones (news, learn)
+      setCards([]);
+      setCitationCards([]);
+    } else {
+      // Only clear non-persistent cards (keep news, learn, memory)
+      setCards(prev => prev.filter(card =>
+        card.type === 'news' || card.type === 'memory'
+      ));
+      // Don't clear citation cards - they're always for Learn intent and should persist
+      // setCitationCards stays as-is
     }
-  }, [cards]);
+  }, []);
 
   const startRecording = async () => {
     console.log('🎤 Starting recording...');
+
+    // Clear all cards (including persistent ones) when starting new recording
+    clearCards(true);
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       console.log('✅ Got media stream');
-      
+
       // Create MediaRecorder with proper options
       const options = { mimeType: 'audio/webm' };
       const recorder = new MediaRecorder(stream, options);
@@ -108,10 +117,10 @@ export default function Index() {
         console.log('⏹️ Recording stopped, chunks:', audioChunksRef.current.length);
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         console.log('📦 Created blob:', audioBlob.size, 'bytes');
-        
+
         // Stop all tracks
         stream.getTracks().forEach(track => track.stop());
-        
+
         // Only upload if we have substantial audio data
         if (audioBlob.size > 1000) {
           await uploadAudio(audioBlob);
@@ -119,7 +128,7 @@ export default function Index() {
           console.warn('⚠️ Audio too short, not uploading');
           setOrbState('idle');
           setShowUnderstanding(false);
-          setCards((prev) => [...prev, {
+          setCards([{
             id: Date.now().toString(),
             type: 'info',
             title: 'Recording too short',
@@ -135,9 +144,9 @@ export default function Index() {
       console.error('❌ Error starting recording:', err);
       setOrbState('idle');
       setShowUnderstanding(false);
-      
+
       // Show error card
-      setCards((prev) => [...prev, {
+      setCards([{
         id: Date.now().toString(),
         type: 'info',
         title: 'Microphone access denied or unavailable',
@@ -159,15 +168,15 @@ export default function Index() {
   const uploadAudio = async (audioBlob: Blob) => {
     setOrbState('thinking');
     setShowUnderstanding(false);
-    
+
     try {
       const result = await voiceAPI.ingestAudio(audioBlob, selectedVoice);
-      
+
       // Only process if we got a valid transcript
       if (!result.transcript || result.transcript.trim() === '') {
         console.warn('⚠️ Empty transcript received');
         setOrbState('idle');
-        setCards((prev) => [...prev, {
+        setCards([{
           id: Date.now().toString(),
           type: 'info',
           title: 'No speech detected',
@@ -182,13 +191,13 @@ export default function Index() {
       // Change context based on intent
       if (result.intent) {
         const intentLower = result.intent.toLowerCase();
-        if (intentLower.includes('calendar')) {
+        if (intentLower.includes('calendar') || intentLower.includes('summary')) {
           setOrbContext('default');
         } else if (intentLower.includes('task')) {
           setOrbContext('focus');
         } else if (intentLower.includes('weather')) {
           setOrbContext('weather');
-        } else if (intentLower.includes('learn') || intentLower.includes('remember')) {
+        } else if (intentLower.includes('learn') || intentLower.includes('educational') || intentLower.includes('news')) {
           setOrbContext('memory');
         }
       }
@@ -196,21 +205,52 @@ export default function Index() {
       // Add acknowledgment card
       if (result.ai_response) {
         const intentLower = result.intent?.toLowerCase() || '';
-        const cardType: CardType = intentLower.includes('task') ? 'task' :
-          intentLower.includes('calendar') ? 'calendar' :
-          intentLower.includes('weather') ? 'weather' :
-          intentLower.includes('learn') || intentLower.includes('remember') ? 'memory' : 'info';
+        let cardType: CardType = 'info';
 
-        setCards([{
+        if (intentLower.includes('weather')) {
+          cardType = 'weather';
+        } else if (intentLower.includes('task')) {
+          cardType = 'task';
+        } else if (intentLower.includes('calendar') || intentLower.includes('summary')) {
+          cardType = 'calendar';
+        } else if (intentLower.includes('learn') || intentLower.includes('educational') || intentLower.includes('remember')) {
+          cardType = 'memory';
+        } else if (intentLower.includes('news')) {
+          cardType = 'news';
+        }
+
+        const mainCard: Card = {
           id: Date.now().toString(),
           type: cardType,
           title: result.ai_response.substring(0, 100) + (result.ai_response.length > 100 ? '...' : ''),
           subtitle: result.intent || undefined,
-        }]);
+          data: result.data,
+        };
+
+        setCards([mainCard]);
+
+        // Handle citations for Learn intent
+        if (cardType === 'memory' && result.data?.citations) {
+          const citations = result.data.citations.map((citation: any, idx: number) => {
+            // Handle both old string format and new object format
+            const url = typeof citation === 'string' ? citation : citation.url;
+            const title = typeof citation === 'string' ? citation : citation.title;
+            const thumbnail = typeof citation === 'string' ? null : citation.thumbnail;
+
+            return {
+              id: `cit-${Date.now()}-${idx}`,
+              type: 'info' as CardType,
+              title: title || url,
+              isCitation: true,
+              data: { url, title, thumbnail }
+            };
+          });
+          setCitationCards(citations);
+        }
       }
 
       setOrbState('speaking');
-      
+
       // Play audio if available
       if (result.audio_base64) {
         try {
@@ -222,17 +262,20 @@ export default function Index() {
           const audioBlob = new Blob([audioArray], { type: 'audio/mpeg' });
           const audioUrl = URL.createObjectURL(audioBlob);
           const audio = new Audio(audioUrl);
-          
+
           audio.onended = () => {
             setOrbState('idle');
+            // Don't clear persistent cards (news, learn) when audio ends
+            clearCards(false);
             URL.revokeObjectURL(audioUrl);
           };
-          
+
           audio.onerror = () => {
             setOrbState('idle');
+            clearCards();
             URL.revokeObjectURL(audioUrl);
           };
-          
+
           audio.play();
         } catch (err) {
           console.error('Error playing audio:', err);
@@ -240,12 +283,16 @@ export default function Index() {
         }
       } else {
         // No audio, just show the text response for a bit
-        setTimeout(() => setOrbState('idle'), 2500);
+        setTimeout(() => {
+          setOrbState('idle');
+          // Don't clear persistent cards (news, learn) when timeout ends
+          clearCards(false);
+        }, 5000);
       }
     } catch (err) {
       console.error('Error uploading audio:', err);
       setOrbState('idle');
-      
+
       // Show error card
       setCards([{
         id: Date.now().toString(),
@@ -271,11 +318,15 @@ export default function Index() {
       setIsRecording(true);
       startRecording();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isRecording]);
 
   const removeCard = useCallback((id: string) => {
     setCards((prev) => prev.filter((card) => card.id !== id));
+  }, []);
+
+  const removeCitation = useCallback((id: string) => {
+    setCitationCards((prev) => prev.filter((card) => card.id !== id));
   }, []);
 
   const handleNavigate = (view: 'tasks' | 'profile') => {
@@ -302,7 +353,7 @@ export default function Index() {
             background: 'radial-gradient(ellipse at 50% 40%, hsl(220, 25%, 8%) 0%, hsl(230, 25%, 5%) 60%, hsl(230, 30%, 3%) 100%)',
           }}
         />
-        
+
         {/* Subtle grid pattern */}
         <div
           className="absolute inset-0 opacity-[0.02]"
@@ -336,12 +387,12 @@ export default function Index() {
       {/* Header with status and settings */}
       <header className="absolute top-0 left-0 right-0 z-10 p-6 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-lg font-medium tracking-wide text-foreground/90">
+          <h1 className="text-lg font-medium tracking-wide text-foreground/90 text-mono">
             JARVIS
           </h1>
           <StatusIndicator state={orbState} />
         </div>
-        <button 
+        <button
           onClick={() => setShowSettings(true)}
           className="p-2 rounded-lg hover:bg-muted/30 transition-colors"
         >
@@ -385,9 +436,8 @@ export default function Index() {
       <div className="fixed bottom-12 left-1/2 -translate-x-1/2 z-20">
         <button
           onClick={handleMicClick}
-          className={`relative flex items-center justify-center w-16 h-16 rounded-full glass-panel cursor-pointer select-none transition-all ${
-            isRecording ? 'scale-110' : 'hover:scale-105'
-          }`}
+          className={`relative flex items-center justify-center w-16 h-16 rounded-full glass-panel cursor-pointer select-none transition-all ${isRecording ? 'scale-110' : 'hover:scale-105'
+            }`}
           style={{
             borderWidth: 2,
             borderColor: isRecording ? 'hsl(185, 85%, 50%)' : 'hsl(220, 20%, 18%)',
@@ -440,20 +490,41 @@ export default function Index() {
         </button>
       </div>
 
-      {/* Acknowledgment cards */}
-      <div className="fixed right-6 top-24 z-10 flex flex-col gap-3">
-        <AnimatePresence mode="popLayout">
-          {cards.map((card, index) => (
-            <AcknowledgmentCard
-              key={card.id}
-              type={card.type}
-              title={card.title}
-              subtitle={card.subtitle}
-              index={index}
-              onDismiss={() => removeCard(card.id)}
-            />
-          ))}
-        </AnimatePresence>
+      {/* Left side area for citations */}
+      <div className="fixed left-6 top-32 bottom-32 z-30 pointer-events-none flex flex-col items-start gap-6 w-full max-w-sm">
+        <div className="w-full flex flex-col items-start gap-4 pointer-events-auto">
+          <AnimatePresence mode="popLayout">
+            {citationCards.map((card) => (
+              <AcknowledgmentCard
+                key={card.id}
+                type={card.type}
+                title={card.title}
+                data={card.data}
+                isCitation={true}
+                onDismiss={() => removeCitation(card.id)}
+              />
+            ))}
+          </AnimatePresence>
+        </div>
+      </div>
+
+      {/* Prominent response area - repositioned to side */}
+      <div className="fixed right-6 top-32 bottom-32 z-30 pointer-events-none flex flex-col items-end gap-6 w-full max-w-xl">
+        <div className="w-full flex flex-col items-end gap-6 pointer-events-auto">
+          <AnimatePresence mode="popLayout">
+            {cards.map((card, index) => (
+              <AcknowledgmentCard
+                key={card.id}
+                type={card.type}
+                title={card.title}
+                subtitle={card.subtitle}
+                data={card.data}
+                index={index}
+                onDismiss={() => removeCard(card.id)}
+              />
+            ))}
+          </AnimatePresence>
+        </div>
       </div>
 
       {/* Context indicator */}
