@@ -1,6 +1,6 @@
 import { forwardRef } from 'react';
 import { motion } from 'framer-motion';
-import { Calendar, CheckCircle, Cloud, Brain, MessageSquare, X, Wind, Droplets, ExternalLink, Clock, AlertTriangle, Newspaper } from 'lucide-react';
+import { Calendar, CheckCircle, Cloud, Lightbulb, MessageSquare, X, Wind, Droplets, ExternalLink, Clock, AlertTriangle, Newspaper, MapPin, AlignLeft } from 'lucide-react';
 
 export type CardType = 'calendar' | 'task' | 'weather' | 'memory' | 'info' | 'news';
 
@@ -31,9 +31,9 @@ const cardConfig = {
     label: 'WEATHER',
   },
   memory: {
-    icon: Brain,
+    icon: Lightbulb,
     accentColor: 'hsl(265, 60%, 55%)',
-    label: 'MEMORY',
+    label: 'INSIGHT',
   },
   info: {
     icon: MessageSquare,
@@ -151,6 +151,15 @@ const TaskList = ({ tasks }: { tasks: any[] }) => (
 
 const TaskReminders = ({ data }: { data: any }) => (
   <div className="mt-4 space-y-6 w-full">
+    {data.tasks?.length > 0 && (
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 px-1">
+          <AlignLeft size={14} className="text-primary/70" />
+          <span className="text-[10px] font-bold tracking-widest text-primary/70 uppercase">Pending Tasks</span>
+        </div>
+        <TaskList tasks={data.tasks} />
+      </div>
+    )}
     {data.overdue?.length > 0 && (
       <div className="space-y-3">
         <div className="flex items-center gap-2 px-1">
@@ -181,30 +190,88 @@ const TaskReminders = ({ data }: { data: any }) => (
   </div>
 );
 
+const SingleTaskDetails = ({ data }: { data: any }) => (
+  <div className="mt-4 p-6 rounded-2xl bg-white/[0.03] border border-white/5 space-y-4">
+    <div className="flex items-center justify-between">
+      <div className={`px-2.5 py-1 rounded-lg text-[10px] font-bold tracking-widest uppercase border ${data.priority === 'high' ? 'bg-red-500/10 text-red-500 border-red-500/20' :
+        data.priority === 'medium' ? 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' :
+          'bg-green-500/10 text-green-500 border-green-500/20'
+        }`}>
+        {data.priority?.toUpperCase() || 'NORMAL'} PRIORITY
+      </div>
+      {data.due_date && (
+        <div className="flex items-center gap-1.5 text-muted-foreground">
+          <Clock size={12} />
+          <span className="text-[10px] font-mono uppercase">
+            {new Date(data.due_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+          </span>
+        </div>
+      )}
+    </div>
+    <div className="space-y-1">
+      <h4 className="text-xl font-medium text-foreground tracking-tight">{data.title}</h4>
+      {data.description && (
+        <p className="text-sm text-muted-foreground leading-relaxed">{data.description}</p>
+      )}
+    </div>
+    <div className="pt-2 flex items-center gap-4 text-[10px] font-bold tracking-widest text-muted-foreground/40 uppercase">
+      <span>Status: {data.status || 'Active'}</span>
+      <span>•</span>
+      <span>ID: {data.id?.substring(0, 8) || 'AUTO'}</span>
+    </div>
+  </div>
+);
+
 const CalendarBriefing = ({ data }: { data: any }) => (
   <div className="mt-4 space-y-4 w-full">
-    <div className="p-5 rounded-2xl bg-white/[0.03] border border-white/5 space-y-4">
-      <div className="flex flex-col gap-1">
-        <span className="text-[10px] tracking-widest text-primary font-bold uppercase">Event Details</span>
-        <h4 className="text-xl font-medium text-foreground tracking-tight">{data.summary || data.title}</h4>
+    <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/5 space-y-6">
+      <div className="flex flex-col gap-2">
+        <span className="text-[10px] tracking-[0.2em] text-primary font-bold uppercase">Scheduled Appointment</span>
+        <h4 className="text-2xl font-light text-foreground tracking-tight">{data.summary || data.title}</h4>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 py-2">
-        <div className="flex flex-col gap-1">
-          <span className="text-[10px] tracking-widest text-muted-foreground uppercase font-bold">Start</span>
-          <span className="text-sm font-medium">
+      <div className="grid grid-cols-2 gap-8 py-4 border-y border-white/5">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <Clock size={12} className="text-primary/50" />
+            <span className="text-[10px] tracking-widest uppercase font-bold">Start Time</span>
+          </div>
+          <span className="text-lg font-light">
             {data.start ? new Date(data.start).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : 'All day'}
+          </span>
+          <span className="text-[10px] text-muted-foreground/60 font-mono italic">
+            {data.start ? new Date(data.start).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : ''}
           </span>
         </div>
         {data.end && (
-          <div className="flex flex-col gap-1 text-right">
-            <span className="text-[10px] tracking-widest text-muted-foreground uppercase font-bold text-right">End</span>
-            <span className="text-sm font-medium">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2 text-muted-foreground">
+              <Clock size={12} className="text-primary/50" />
+              <span className="text-[10px] tracking-widest uppercase font-bold">End Time</span>
+            </div>
+            <span className="text-lg font-light">
               {new Date(data.end).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
             </span>
           </div>
         )}
       </div>
+
+      {(data.location || data.description) && (
+        <div className="space-y-3 pt-2">
+          {data.location && (
+            <div className="flex items-start gap-3 text-muted-foreground">
+              <MapPin size={14} className="mt-0.5 text-primary/40" />
+              <span className="text-xs">{data.location}</span>
+            </div>
+          )}
+          {data.description && (
+            <div className="flex items-start gap-3 text-muted-foreground">
+              <AlignLeft size={14} className="mt-0.5 text-primary/40" />
+              <p className="text-xs italic leading-relaxed">{data.description}</p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   </div>
 );
@@ -250,7 +317,7 @@ const NewsView = ({ data }: { data: any }) => (
 const InsightBriefing = ({ data }: { data: any }) => (
   <div className="mt-4 w-full">
     <div className="p-6 rounded-2xl bg-white/[0.03] border border-white/5 relative overflow-hidden">
-      <Brain className="absolute -right-6 -bottom-6 w-32 h-32 text-primary/5 -rotate-12 pointer-events-none" />
+      <Lightbulb className="absolute -right-6 -bottom-6 w-32 h-32 text-primary/5 -rotate-12 pointer-events-none" />
       <p className="text-lg text-foreground/90 leading-relaxed font-light relative z-10">
         {data.answer}
       </p>
@@ -290,17 +357,7 @@ export const AcknowledgmentCard = forwardRef<HTMLDivElement, AcknowledgmentCardP
         if (data.tasks || data.overdue || data.due_today) {
           return <TaskReminders data={data} />;
         }
-        return (
-          <div className="mt-4 p-5 rounded-2xl bg-white/[0.03] border border-white/5">
-            <div className="flex items-center gap-3 mb-3">
-              <span className={`text-[10px] px-2 py-0.5 rounded-md font-bold tracking-widest border ${data.priority === 'high' ? 'bg-red-500/10 text-red-500 border-red-500/20' : 'bg-green-500/10 text-green-500 border-green-500/20'}`}>
-                {data.priority?.toUpperCase() || 'NORMAL'}
-              </span>
-              <span className="text-[10px] font-mono text-muted-foreground uppercase">{data.status}</span>
-            </div>
-            <p className="text-lg font-medium text-foreground">{data.title}</p>
-          </div>
-        );
+        return <SingleTaskDetails data={data} />;
       }
 
       // Calendar logic
@@ -360,7 +417,7 @@ export const AcknowledgmentCard = forwardRef<HTMLDivElement, AcknowledgmentCardP
                   {config.label}
                 </span>
                 <h3 className="text-sm font-bold text-foreground/90 tracking-widest uppercase mt-0.5">
-                  Briefing System
+                  {(subtitle || 'Briefing System').replace(/_/g, ' ')}
                 </h3>
               </div>
             </div>
@@ -379,13 +436,16 @@ export const AcknowledgmentCard = forwardRef<HTMLDivElement, AcknowledgmentCardP
 
         {/* Action Button - refined */}
         <button
-          className="absolute top-8 right-8 p-2 rounded-full hover:bg-white/5 transition-all text-muted-foreground/40 hover:text-foreground"
+          className="absolute top-8 right-8 p-3 rounded-full hover:bg-white/10 transition-all text-muted-foreground/60 hover:text-foreground z-20 group-hover:bg-white/5"
           onClick={(e) => {
+            e.preventDefault();
             e.stopPropagation();
             onDismiss?.();
           }}
+          type="button"
+          aria-label="Dismiss"
         >
-          <X size={16} />
+          <X size={18} />
         </button>
       </motion.div >
     );

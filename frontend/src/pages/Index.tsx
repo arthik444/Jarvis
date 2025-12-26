@@ -34,6 +34,7 @@ export default function Index() {
   const [isRecording, setIsRecording] = useState(false);
   const [textInput, setTextInput] = useState('');
   const [isTextPanelOpen, setIsTextPanelOpen] = useState(false);
+  const [currentIntent, setCurrentIntent] = useState<string>('');
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -80,13 +81,14 @@ export default function Index() {
       // Clear all cards including persistent ones (news, learn)
       setCards([]);
       setCitationCards([]);
+      setCurrentIntent('');
     } else {
-      // Only clear non-persistent cards (keep news, learn, memory)
+      // Only clear non-persistent cards (weather, task, calendar, info)
+      // Keep news and memory (learn) cards as they are "persistent briefings"
       setCards(prev => prev.filter(card =>
         card.type === 'news' || card.type === 'memory'
       ));
-      // Don't clear citation cards - they're always for Learn intent and should persist
-      // setCitationCards stays as-is
+      // Citation cards are for Learn intent and should persist
     }
   }, []);
 
@@ -192,6 +194,7 @@ export default function Index() {
 
       // Change context based on intent
       if (result.intent) {
+        setCurrentIntent(result.intent);
         const intentLower = result.intent.toLowerCase();
         if (intentLower.includes('calendar') || intentLower.includes('summary')) {
           setOrbContext('default');
@@ -202,6 +205,8 @@ export default function Index() {
         } else if (intentLower.includes('learn') || intentLower.includes('educational') || intentLower.includes('news')) {
           setOrbContext('memory');
         }
+      } else {
+        setCurrentIntent('GENERAL_CHAT');
       }
 
       // Add acknowledgment card
@@ -225,7 +230,7 @@ export default function Index() {
           id: Date.now().toString(),
           type: cardType,
           title: result.ai_response.substring(0, 100) + (result.ai_response.length > 100 ? '...' : ''),
-          subtitle: result.intent || undefined,
+          subtitle: result.intent || 'RESPONSE',
           data: result.data,
         };
 
@@ -331,11 +336,14 @@ export default function Index() {
 
       // Update context based on intent
       if (result.intent) {
+        setCurrentIntent(result.intent);
         const intentLower = result.intent.toLowerCase();
         if (intentLower.includes('calendar') || intentLower.includes('summary')) setOrbContext('default');
         else if (intentLower.includes('task')) setOrbContext('focus');
         else if (intentLower.includes('weather')) setOrbContext('weather');
         else if (intentLower.includes('learn') || intentLower.includes('news')) setOrbContext('memory');
+      } else {
+        setCurrentIntent('GENERAL_CHAT');
       }
 
       // Add card
@@ -358,13 +366,19 @@ export default function Index() {
 
         // Handle citations
         if (cardType === 'memory' && result.data?.citations) {
-          const citations = result.data.citations.map((citation: any, idx: number) => ({
-            id: `cit-${Date.now()}-${idx}`,
-            type: 'info' as CardType,
-            title: typeof citation === 'string' ? citation : citation.title || citation.url,
-            isCitation: true,
-            data: { url: typeof citation === 'string' ? citation : citation.url }
-          }));
+          const citations = result.data.citations.map((citation: any, idx: number) => {
+            const url = typeof citation === 'string' ? citation : citation.url;
+            const title = typeof citation === 'string' ? citation : citation.title;
+            const thumbnail = typeof citation === 'string' ? null : citation.thumbnail;
+
+            return {
+              id: `cit-${Date.now()}-${idx}`,
+              type: 'info' as CardType,
+              title: title || url,
+              isCitation: true,
+              data: { url, title, thumbnail }
+            };
+          });
           setCitationCards(citations);
         }
       }
@@ -681,12 +695,13 @@ export default function Index() {
 
       {/* Context indicator */}
       <motion.div
-        className="fixed bottom-6 left-6 text-[10px] tracking-widest text-muted-foreground/50 text-mono"
+        className="fixed bottom-6 left-6 text-[10px] tracking-widest text-muted-foreground/50 text-mono flex items-center gap-2"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 1 }}
       >
-        CONTEXT: {orbContext.toUpperCase()}
+        <div className="w-1.5 h-1.5 rounded-full bg-primary/30 animate-pulse" />
+        INTENT: {currentIntent || 'IDLE'} | CONTEXT: {orbContext.toUpperCase()}
       </motion.div>
     </div>
   );
