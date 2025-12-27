@@ -296,12 +296,12 @@ class OrchestratorService:
             "GET_NEWS": self._handle_news,
         }
         
-        # Handle GENERAL_CHAT specially to pass history
+        # Handle GENERAL_CHAT specially to pass history and user_id for memory context
         if intent == "GENERAL_CHAT":
-            handler_response = await self._handle_general_chat(transcript, profile, history)
+            handler_response = await self._handle_general_chat(transcript, profile, history, user_id)
         else:
             # Get handler or default to general chat
-            handler = handlers.get(intent, lambda t: self._handle_general_chat(t, profile, history))
+            handler = handlers.get(intent, lambda t: self._handle_general_chat(t, profile, history, user_id))
             handler_response = await handler(transcript)
         
         # Beautify the message for natural speech (skip for GENERAL_CHAT as it's already natural)
@@ -418,7 +418,8 @@ class OrchestratorService:
             if len(raw_message) < 30:
                 return raw_message
             
-            prompt = f"""Make this natural for voice assistant. Conversational, 2-3 sentences.
+            prompt = f"""Make this natural for a voice assistant speaking directly to the user.
+Use "you/your" (not "they/their"). Conversational, 2-3 sentences.
 
 Input: {raw_message}
 
@@ -1902,22 +1903,21 @@ Gmail query:"""
         Returns:
             Confirmation of stored memory
         """
-        print(f">>> REMEMBER_THIS handler called for user {user_id}")
         logger.info(f"Handler: REMEMBER_THIS for user {user_id}")
         
         try:
             memory_service = get_memory_service()
-            print(f">>> Memory service obtained: {memory_service.memory is not None}")
             
             # Extract what to remember using Gemini
             prompt = f"""Extract the fact or information the user wants to remember.
-Return ONLY the fact as a clear, concise statement.
+Return ONLY the fact as a clear, concise statement from the user's perspective.
 
 Examples:
 "Remember that my wife's birthday is March 15" → "Wife's birthday is March 15"
-"Don't forget I'm allergic to peanuts" → "User is allergic to peanuts"
+"Don't forget I'm allergic to peanuts" → "Allergic to peanuts"
 "Remember my mom's name is Linda" → "Mom's name is Linda"
 "Keep in mind I prefer morning meetings" → "Prefers morning meetings"
+"Remember I have a second wife named Sarah" → "Second wife's name is Sarah"
 
 User request: "{transcript}"
 
@@ -1937,22 +1937,26 @@ Fact to remember:"""
                     "message": "I couldn't understand what you'd like me to remember. Could you rephrase that?"
                 }
             
-            # Store the memory
-            result = memory_service.add_memory(user_id, fact, metadata={"source": "explicit"})
+            # Fire-and-forget: Store memory in background for instant response
+            async def save_memory_async():
+                try:
+                    result = memory_service.add_memory(user_id, fact, metadata={"source": "explicit"})
+                    if result.get("success"):
+                        logger.info(f"✓ Background: Stored memory for {user_id}: {fact}")
+                    else:
+                        logger.warning(f"Background: Failed to store memory: {result.get('error')}")
+                except Exception as e:
+                    logger.error(f"Background: Memory save failed: {e}")
             
-            if result.get("success"):
-                logger.info(f"✓ Stored memory for {user_id}: {fact}")
-                return {
-                    "type": "memory",
-                    "data": {"action": "stored", "memory": fact},
-                    "message": f"Got it! I'll remember that: {fact}"
-                }
-            else:
-                return {
-                    "type": "memory",
-                    "data": {"error": result.get("error")},
-                    "message": "I had trouble storing that memory. Let me try again."
-                }
+            # Don't await - fire and forget!
+            asyncio.create_task(save_memory_async())
+            
+            logger.info(f"Responding immediately, memory save in background for {user_id}")
+            return {
+                "type": "memory",
+                "data": {"action": "stored", "memory": fact},
+                "message": f"Got it! I'll remember that."
+            }
                 
         except Exception as e:
             logger.error(f"Remember handler failed: {e}")
@@ -1973,7 +1977,6 @@ Fact to remember:"""
         Returns:
             List of relevant memories
         """
-        print(f">>> RECALL_MEMORY handler called for user {user_id}")
         logger.info(f"Handler: RECALL_MEMORY for user {user_id}")
         
         try:
@@ -1991,11 +1994,9 @@ Fact to remember:"""
             if is_general:
                 # Get all memories
                 memories = memory_service.get_all_memories(user_id)
-                print(f">>> Got ALL memories: {memories}")
             else:
-                # Search for relevant memories
-                memories = memory_service.search_memories(user_id, transcript, limit=10)
-                print(f">>> Searched memories for '{transcript}': {memories}")
+                # Search for relevant memories - limit to top 2 for specific queries
+                memories = memory_service.search_memories(user_id, transcript, limit=2)
             
             if not memories:
                 return {
@@ -2116,7 +2117,7 @@ Fact to remember:"""
                 memory_text = str(top_memory)
             
             if memory_id:
-                success = memory_service.delete_memory(memory_id)
+                success = memory_service.delete_memory(memory_id, user_id=user_id)
                 if success:
                     return {
                         "type": "memory",
@@ -2138,14 +2139,15 @@ Fact to remember:"""
                 "message": "I'm having trouble with my memory right now."
             }
 
-    async def _handle_general_chat(self, transcript: str, profile: Dict[str, Any] = None, history: list = None) -> Dict[str, Any]:
+    async def _handle_general_chat(self, transcript: str, profile: Dict[str, Any] = None, history: list = None, user_id: str = None) -> Dict[str, Any]:
         """
-        Handle general conversation using Gemini AI.
+        Handle general conversation using Gemini AI with memory context.
         
         Args:
             transcript: User's conversational message
             profile: Optional user profile for personalization
             history: Optional conversation history for context
+            user_id: Optional user ID for memory context injection
             
         Returns:
             Conversational response from Gemini
@@ -2153,14 +2155,41 @@ Fact to remember:"""
         logger.info("Handler: GENERAL_CHAT")
         
         try:
-            # Generate conversational response with profile and history context
-            response = await self.gemini_service.generate_response(transcript, profile, history)
+            # Inject user memories as context if available
+            memory_context = ""
+            if user_id:
+                try:
+                    memory_service = get_memory_service()
+                    memories = memory_service.get_all_memories(user_id)
+                    if memories:
+                        memory_parts = []
+                        for mem in memories:
+                            if isinstance(mem, dict):
+                                text = mem.get("memory", mem.get("text", ""))
+                            else:
+                                text = str(mem)
+                            if text:
+                                memory_parts.append(f"- {text}")
+                        if memory_parts:
+                            memory_context = "Things I remember about you (use 'you/your' when referring to these):\n" + "\n".join(memory_parts)
+                            print(f"💭 Injecting {len(memory_parts)} memories into chat context")
+                except Exception as e:
+                    logger.warning(f"Failed to get memories for context: {e}")
+            
+            # Generate conversational response with profile, history, and memory context
+            response = await self.gemini_service.generate_response(
+                transcript, 
+                profile, 
+                history,
+                memory_context=memory_context
+            )
             
             return {
                 "type": "conversation",
                 "data": {
                     "response_type": "casual",
                     "context": "general_chat",
+                    "memory_used": bool(memory_context),
                 },
                 "message": response,
             }

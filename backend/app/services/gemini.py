@@ -35,7 +35,7 @@ class GeminiService:
         )
         logger.info("✓ Gemini Flash service initialized")
 
-    async def generate_response(self, user_message: str, profile: dict = None, history: list = None) -> str:
+    async def generate_response(self, user_message: str, profile: dict = None, history: list = None, memory_context: str = None) -> str:
         """
         Generate a conversational response to user input.
         
@@ -43,6 +43,7 @@ class GeminiService:
             user_message: User's transcribed message
             profile: Optional user profile for personalization
             history: Optional conversation history for context
+            memory_context: Optional long-term memory context about the user
             
         Returns:
             Conversational response
@@ -79,11 +80,17 @@ class GeminiService:
                     history_lines.append(f"{role}: {content}")
                 history_context = "\n".join(history_lines) + "\n\n"
             
-            # Construct prompt with personality and context
+            # Build memory context if available
+            memory_section = ""
+            if memory_context:
+                memory_section = f"{memory_context}\n\n"
+            
+            # Construct prompt with personality, context, and memories
             prompt = f"""You are Jarvis, a helpful and friendly personal AI assistant. You are concise, warm, and conversational. Respond naturally as if chatting with a friend. Keep responses brief (1-2 sentences).
 
+IMPORTANT: When referencing the user's personal information below, use "your" (e.g., "your favorite color is blue"), never "my".
 
-Your capabilities: weather queries, task management (add/complete/update/delete tasks), calendar events (create/update/delete), daily summaries, task reminders, and general conversation.
+{memory_section}Your capabilities: weather queries, task management (add/complete/update/delete tasks), calendar events (create/update/delete), daily summaries, task reminders, and general conversation.
 {profile_context}{history_context}User: {user_message}
 Jarvis:"""
 

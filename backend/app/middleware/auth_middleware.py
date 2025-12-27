@@ -108,4 +108,21 @@ async def get_current_user(request: Request) -> str:
         )
     
     user_info = await AuthMiddleware.verify_token(auth_header)
-    return user_info.get("uid")
+    user_id = user_info.get("uid")
+    
+    # Preload user memories ONCE on first auth (not every request)
+    if user_id not in _preloaded_users:
+        try:
+            from app.services.memory_service import preload_user_memories
+            memory_count = preload_user_memories(user_id)
+            _preloaded_users.add(user_id)
+            if memory_count > 0:
+                print(f"🚀 PRELOADED {memory_count} memories for user {user_id[:8]}... on login")
+        except Exception as e:
+            logger.warning(f"Failed to preload memories: {e}")
+    
+    return user_id
+
+
+# Track users who have already been preloaded this session
+_preloaded_users: set = set()
