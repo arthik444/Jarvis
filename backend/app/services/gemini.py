@@ -35,7 +35,7 @@ class GeminiService:
         )
         logger.info("✓ Gemini Flash service initialized")
 
-    async def generate_response(self, user_message: str, profile: dict = None, history: list = None) -> str:
+    async def generate_response(self, user_message: str, profile: dict = None, history: list = None, memory_context: str = None) -> str:
         """
         Generate a conversational response to user input.
         
@@ -43,6 +43,7 @@ class GeminiService:
             user_message: User's transcribed message
             profile: Optional user profile for personalization
             history: Optional conversation history for context
+            memory_context: Optional long-term memory context about the user
             
         Returns:
             Conversational response
@@ -79,11 +80,17 @@ class GeminiService:
                     history_lines.append(f"{role}: {content}")
                 history_context = "\n".join(history_lines) + "\n\n"
             
-            # Construct prompt with personality and context
+            # Build memory context if available
+            memory_section = ""
+            if memory_context:
+                memory_section = f"{memory_context}\n\n"
+            
+            # Construct prompt with personality, context, and memories
             prompt = f"""You are Jarvis, a helpful and friendly personal AI assistant. You are concise, warm, and conversational. Respond naturally as if chatting with a friend. Keep responses brief (1-2 sentences).
 
+IMPORTANT: When referencing the user's personal information below, use "your" (e.g., "your favorite color is blue"), never "my".
 
-Your capabilities: weather queries, task management (add/complete/update/delete tasks), calendar events (create/update/delete), daily summaries, task reminders, and general conversation.
+{memory_section}Your capabilities: weather queries, task management (add/complete/update/delete tasks), calendar events (create/update/delete), daily summaries, task reminders, and general conversation.
 {profile_context}{history_context}User: {user_message}
 Jarvis:"""
 
@@ -213,7 +220,7 @@ Current date: {current_date} ({day_of_week})
 
 Input: "{user_message}"
 
-Intents: GET_WEATHER, ADD_TASK, DAILY_SUMMARY, CREATE_CALENDAR_EVENT, UPDATE_CALENDAR_EVENT, DELETE_CALENDAR_EVENT, LEARN, GET_NEWS, GENERAL_CHAT
+Intents: GET_WEATHER, ADD_TASK, COMPLETE_TASK, UPDATE_TASK, DELETE_TASK, LIST_TASKS, GET_TASK_REMINDERS, DAILY_SUMMARY, CREATE_CALENDAR_EVENT, UPDATE_CALENDAR_EVENT, DELETE_CALENDAR_EVENT, CHECK_EMAIL, SEARCH_EMAIL, ANALYZE_EMAIL, SEARCH_RESTAURANTS, REMEMBER_THIS, RECALL_MEMORY, FORGET_THIS, LEARN, GET_NEWS, GENERAL_CHAT
 
 For calendar intents, extract:
 - title: event name (clean, no articles)
@@ -291,8 +298,10 @@ Intents:
 - GET_WEATHER: weather queries
 - ADD_TASK, COMPLETE_TASK, UPDATE_TASK, DELETE_TASK, LIST_TASKS, GET_TASK_REMINDERS: task management  
 - DAILY_SUMMARY, CREATE_CALENDAR_EVENT, UPDATE_CALENDAR_EVENT, DELETE_CALENDAR_EVENT: calendar/scheduling
-- CHECK_EMAIL: check emails, unread messages, inbox status, "any new emails?", email summary
-- SEARCH_EMAIL: find specific emails, "emails from Bob", search for emails about a topic
+- CHECK_EMAIL: list emails, show inbox, "my last 5 emails", "any new emails?", "show me my emails", unread count
+- SEARCH_EMAIL: find emails with specific criteria like from/subject/date, "emails from Bob", "find emails about invoices"
+- ANALYZE_EMAIL: analyze/summarize email content, "do any emails have deadlines?", "summarize my emails", "what are my emails about?", "any urgent emails?"
+- SEARCH_RESTAURANTS: restaurant/food recommendations, "find restaurants near me", "best Italian place", "where to eat", "recommend a sushi place", "coffee shops nearby"
 - REMEMBER_THIS: user wants you to remember something, "remember that", "don't forget", store fact
 - RECALL_MEMORY: user asks what you remember, "what do you know about me", "what did I tell you"
 - FORGET_THIS: user wants to delete a memory, "forget that", "delete memory"
@@ -306,7 +315,18 @@ Examples:
 - "how's the weather" → GET_WEATHER
 - "add task" → ADD_TASK
 - "do I have any new emails?" → CHECK_EMAIL
+- "show me my last 5 emails" → CHECK_EMAIL
+- "what are my recent emails" → CHECK_EMAIL
 - "find emails from John" → SEARCH_EMAIL
+- "emails about meeting" → SEARCH_EMAIL
+- "summarize my last 5 emails" → ANALYZE_EMAIL
+- "do any of my emails have deadlines?" → ANALYZE_EMAIL
+- "what are my emails about?" → ANALYZE_EMAIL
+- "any urgent emails I should read?" → ANALYZE_EMAIL
+- "find restaurants near me" → SEARCH_RESTAURANTS
+- "best Italian restaurant" → SEARCH_RESTAURANTS
+- "recommend a sushi place nearby" → SEARCH_RESTAURANTS
+- "where can I get coffee?" → SEARCH_RESTAURANTS
 - "remember that my wife's birthday is March 15" → REMEMBER_THIS
 - "what do you know about my family?" → RECALL_MEMORY
 - "forget what I told you about my job" → FORGET_THIS

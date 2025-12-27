@@ -90,12 +90,59 @@ class MemoryService:
             "version": "v1.1"
         }
         
+        # In-memory cache for fast reads: {user_id: [memory_list]}
+        self._cache: Dict[str, List[Dict[str, Any]]] = {}
+        
         try:
             self.memory = Memory.from_config(config)
             logger.info("✓ Memory service initialized with Mem0")
         except Exception as e:
             logger.error(f"Failed to initialize Mem0: {e}")
             self.memory = None
+    
+    def load_user_memories(self, user_id: str, force_refresh: bool = False) -> List[Dict[str, Any]]:
+        """
+        Load all memories for a user into cache. Call on login for fast access.
+        
+        Args:
+            user_id: User identifier
+            force_refresh: If True, bypass cache and fetch from Qdrant
+            
+        Returns:
+            List of user memories
+        """
+        if not force_refresh and user_id in self._cache:
+            print(f"📦 CACHE HIT: {len(self._cache[user_id])} memories for user {user_id[:8]}...")
+            logger.info(f"Cache hit for user {user_id}: {len(self._cache[user_id])} memories")
+            return self._cache[user_id]
+        
+        # Fetch from Qdrant and cache
+        memories = self._fetch_all_from_qdrant(user_id)
+        self._cache[user_id] = memories
+        print(f"🔄 CACHE LOADED: {len(memories)} memories from Qdrant for user {user_id[:8]}...")
+        logger.info(f"Loaded {len(memories)} memories into cache for user {user_id}")
+        return memories
+    
+    def _fetch_all_from_qdrant(self, user_id: str) -> List[Dict[str, Any]]:
+        """Fetch all memories directly from Qdrant (bypasses cache)"""
+        if not self.memory:
+            return []
+        
+        try:
+            results = self.memory.get_all(user_id=user_id)
+            if isinstance(results, dict) and 'results' in results:
+                results = results['results']
+            return results
+        except Exception as e:
+            logger.error(f"Failed to fetch from Qdrant: {e}")
+            return []
+    
+    def _invalidate_cache(self, user_id: str):
+        """Invalidate cache for a user after write operations"""
+        if user_id in self._cache:
+            del self._cache[user_id]
+            print(f"❌ CACHE INVALIDATED for user {user_id[:8]}...")
+            logger.info(f"Cache invalidated for user {user_id}")
 
     def add_memory(self, user_id: str, text: str, metadata: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -118,6 +165,8 @@ class MemoryService:
                 user_id=user_id,
                 metadata=metadata or {"source": "explicit"}
             )
+            # Invalidate cache to force refresh on next read
+            self._invalidate_cache(user_id)
             logger.info(f"✓ Added memory for user {user_id}: {text[:50]}...")
             return {"success": True, "result": result}
         except Exception as e:
@@ -156,7 +205,7 @@ class MemoryService:
 
     def get_all_memories(self, user_id: str) -> List[Dict[str, Any]]:
         """
-        Get all memories for a user.
+        Get all memories for a user (uses cache for fast access).
         
         Args:
             user_id: User identifier
@@ -164,26 +213,16 @@ class MemoryService:
         Returns:
             List of all memories
         """
-        if not self.memory:
-            return []
-        
-        try:
-            results = self.memory.get_all(user_id=user_id)
-            # Mem0 may return {'results': [...]} or just a list
-            if isinstance(results, dict) and 'results' in results:
-                results = results['results']
-            logger.info(f"Retrieved {len(results)} total memories for user {user_id}")
-            return results
-        except Exception as e:
-            logger.error(f"Failed to get memories: {e}")
-            return []
+        # Use cached version for faster reads
+        return self.load_user_memories(user_id)
 
-    def delete_memory(self, memory_id: str) -> bool:
+    def delete_memory(self, memory_id: str, user_id: str = None) -> bool:
         """
         Delete a specific memory by ID.
         
         Args:
             memory_id: The memory ID to delete
+            user_id: Optional user ID for cache invalidation
             
         Returns:
             True if deleted successfully
@@ -193,6 +232,9 @@ class MemoryService:
         
         try:
             self.memory.delete(memory_id=memory_id)
+            # Invalidate cache if user_id provided
+            if user_id:
+                self._invalidate_cache(user_id)
             logger.info(f"✓ Deleted memory {memory_id}")
             return True
         except Exception as e:
@@ -214,6 +256,8 @@ class MemoryService:
         
         try:
             self.memory.delete_all(user_id=user_id)
+            # Invalidate cache
+            self._invalidate_cache(user_id)
             logger.info(f"✓ Deleted all memories for user {user_id}")
             return True
         except Exception as e:
@@ -244,6 +288,32 @@ class MemoryService:
                 context_parts.append(f"- {memory_text}")
         
         return "\n".join(context_parts)
+    
+    def get_cached_context(self, user_id: str) -> str:
+        """
+        Get all cached memories as context string (fast, no Qdrant call if cached).
+        
+        Args:
+            user_id: User identifier
+            
+        Returns:
+            Formatted context string with all user memories
+        """
+        memories = self.load_user_memories(user_id)  # Uses cache
+        
+        if not memories:
+            return ""
+        
+        context_parts = ["Things I remember about you (always use 'you/your' when mentioning these):"]
+        for mem in memories:
+            if isinstance(mem, dict):
+                memory_text = mem.get("memory", mem.get("text", ""))
+            else:
+                memory_text = str(mem)
+            if memory_text:
+                context_parts.append(f"- {memory_text}")
+        
+        return "\n".join(context_parts)
 
 
 # Singleton instance
@@ -256,3 +326,19 @@ def get_memory_service() -> MemoryService:
     if _memory_service is None:
         _memory_service = MemoryService()
     return _memory_service
+
+
+def preload_user_memories(user_id: str) -> int:
+    """
+    Preload memories for a user on login (only loads if not already cached).
+    
+    Args:
+        user_id: User identifier
+        
+    Returns:
+        Number of memories loaded
+    """
+    service = get_memory_service()
+    # Don't force refresh - use cache if available for speed
+    memories = service.load_user_memories(user_id, force_refresh=False)
+    return len(memories)

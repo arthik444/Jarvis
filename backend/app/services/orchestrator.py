@@ -9,6 +9,7 @@ from app.services.gemini import get_gemini_service
 from app.services.fitbit_tool import get_fitbit_tool
 from app.services.gmail_tool import get_gmail_tool
 from app.services.memory_service import get_memory_service
+from app.services.yelp_tool import get_yelp_tool
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +290,8 @@ class OrchestratorService:
             "DELETE_CALENDAR_EVENT": lambda t: self._handle_delete_calendar_event(t, user_id),
             "CHECK_EMAIL": lambda t: self._handle_check_email(t, user_id),
             "SEARCH_EMAIL": lambda t: self._handle_search_email(t, user_id),
+            "ANALYZE_EMAIL": lambda t: self._handle_analyze_email(t, user_id),
+            "SEARCH_RESTAURANTS": lambda t: self._handle_search_restaurants(t, user_id, profile),
             "REMEMBER_THIS": lambda t: self._handle_remember_this(t, user_id),
             "RECALL_MEMORY": lambda t: self._handle_recall_memory(t, user_id),
             "FORGET_THIS": lambda t: self._handle_forget_this(t, user_id),
@@ -296,12 +299,12 @@ class OrchestratorService:
             "GET_NEWS": self._handle_news,
         }
         
-        # Handle GENERAL_CHAT specially to pass history
+        # Handle GENERAL_CHAT specially to pass history and user_id for memory context
         if intent == "GENERAL_CHAT":
-            handler_response = await self._handle_general_chat(transcript, profile, history)
+            handler_response = await self._handle_general_chat(transcript, profile, history, user_id)
         else:
             # Get handler or default to general chat
-            handler = handlers.get(intent, lambda t: self._handle_general_chat(t, profile, history))
+            handler = handlers.get(intent, lambda t: self._handle_general_chat(t, profile, history, user_id))
             handler_response = await handler(transcript)
         
         # Beautify the message for natural speech (skip for GENERAL_CHAT as it's already natural)
@@ -418,7 +421,8 @@ class OrchestratorService:
             if len(raw_message) < 30:
                 return raw_message
             
-            prompt = f"""Make this natural for voice assistant. Conversational, 2-3 sentences.
+            prompt = f"""Make this natural for a voice assistant speaking directly to the user.
+Use "you/your" (not "they/their"). Conversational, 2-3 sentences.
 
 Input: {raw_message}
 
@@ -1732,15 +1736,17 @@ JSON:"""
                 email_filter = "unread"
                 summarize = False
             
-            # Build query based on filter
-            query = ""
+            # Build query based on filter - always include category:primary
+            base_filter = "category:primary"
             if email_filter == "unread":
-                query = "is:unread"
+                query = f"{base_filter} is:unread"
             elif email_filter == "today":
                 from datetime import datetime
                 today = datetime.now().strftime("%Y/%m/%d")
-                query = f"after:{today}"
-            # "all" = no filter
+                query = f"{base_filter} after:{today}"
+            else:
+                # "all" = just primary inbox
+                query = base_filter
             
             # Get unread count for context
             unread_count = gmail_tool.get_unread_count()
@@ -1824,13 +1830,20 @@ JSON:"""
             
             # Extract search query using Gemini
             prompt = f"""Extract the Gmail search query from this request. 
-Return ONLY the Gmail search syntax. Use Gmail operators like from:, subject:, to:, is:unread, etc.
+Return ONLY the Gmail search syntax. Use Gmail operators: from:, subject:, to:, is:unread, newer_than:, older_than:
+
+IMPORTANT: 
+- For "from" queries, use the exact name: "from John" → "from:John"
+- Keep queries simple and precise
+- Do NOT include "category:primary" - I'll add that
 
 Examples:
 - "find emails from John" → "from:John"
-- "emails about meeting" → "subject:meeting"
+- "find emails from John Smith" → "from:John Smith"
+- "emails about meeting" → "subject:meeting OR meeting"
 - "messages from boss last week" → "from:boss newer_than:7d"
 - "unread emails from sarah" → "from:sarah is:unread"
+- "emails from amazon" → "from:amazon"
 
 Request: "{transcript}"
 
@@ -1844,6 +1857,10 @@ Gmail query:"""
             query = response.text.strip().strip('"\'')
             if not query:
                 query = transcript  # Fallback to raw transcript
+            
+            # Always add category:primary to filter out Promotions/Social/Updates
+            if "category:" not in query.lower():
+                query = f"category:primary {query}"
             
             logger.info(f"📧 Gmail search query: '{query}'")
             
@@ -1891,6 +1908,239 @@ Gmail query:"""
                 "message": "I'm having trouble searching your emails right now."
             }
 
+    async def _handle_analyze_email(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
+        """
+        Handle email content analysis requests - read bodies and analyze with LLM.
+        
+        Args:
+            transcript: User's request (e.g., "do any of my emails have deadlines?")
+            user_id: User identifier for data isolation
+            
+        Returns:
+            Analysis results from reading email content
+        """
+        logger.info(f"Handler: ANALYZE_EMAIL for user {user_id}")
+        
+        try:
+            gmail_tool = get_gmail_tool(user_id=user_id)
+            
+            # Check if authorized
+            if not gmail_tool.service:
+                logger.info(f"User {user_id} requested email analysis but Gmail is not authorized")
+                return {
+                    "type": "email_analysis",
+                    "data": {"error": "not_authorized"},
+                    "message": "I don't have access to your Gmail yet. You can connect it in the Profile settings!"
+                }
+            
+            # Extract how many emails to analyze (default 5, max 10)
+            import re
+            count_match = re.search(r'\b(\d+)\s*emails?\b', transcript.lower())
+            email_count = min(int(count_match.group(1)), 10) if count_match else 5
+            
+            # Fetch recent emails from Primary inbox
+            emails = gmail_tool.get_recent_emails(max_results=email_count, query="category:primary")
+            
+            if not emails:
+                return {
+                    "type": "email_analysis",
+                    "data": {"emails_analyzed": 0},
+                    "message": "You don't have any recent emails in your Primary inbox to analyze."
+                }
+            
+            # Fetch full body for each email
+            email_contents = []
+            for email in emails:
+                body = gmail_tool.get_email_body(email.get('id', ''))
+                # Truncate long bodies to avoid token limits
+                if len(body) > 1500:
+                    body = body[:1500] + "...[truncated]"
+                
+                email_contents.append({
+                    'from': email.get('from', 'Unknown'),
+                    'subject': email.get('subject', '(No Subject)'),
+                    'date': email.get('date', ''),
+                    'body': body or email.get('snippet', '')
+                })
+            
+            # Build email digest for LLM
+            email_digest = ""
+            for i, e in enumerate(email_contents, 1):
+                email_digest += f"\n--- Email {i} ---\n"
+                email_digest += f"From: {e['from']}\n"
+                email_digest += f"Subject: {e['subject']}\n"
+                email_digest += f"Date: {e['date']}\n"
+                email_digest += f"Content: {e['body']}\n"
+            
+            # Send to LLM for analysis
+            prompt = f"""You are Jarvis, analyzing the user's emails to answer their question.
+
+User's question: "{transcript}"
+
+Here are their last {len(email_contents)} emails:
+{email_digest}
+
+Based on these emails, answer the user's question directly and conversationally.
+Be specific - mention email subjects/senders when relevant.
+Keep response under 3 sentences unless they asked for a detailed summary."""
+
+            response = self.gemini_service.model.generate_content(
+                prompt,
+                generation_config={"temperature": 0.7, "max_output_tokens": 300}
+            )
+            
+            analysis = response.text.strip()
+            
+            return {
+                "type": "email_analysis",
+                "data": {
+                    "emails_analyzed": len(email_contents),
+                    "question": transcript
+                },
+                "message": analysis
+            }
+            
+        except Exception as e:
+            logger.error(f"Analyze email handler failed: {e}")
+            return {
+                "type": "email_analysis",
+                "data": {"error": str(e)},
+                "message": "I'm having trouble analyzing your emails right now."
+            }
+
+    async def _handle_search_restaurants(
+        self, 
+        transcript: str, 
+        user_id: str = "default",
+        profile: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """
+        Handle restaurant search requests using Yelp AI API.
+        
+        Args:
+            transcript: User's request (e.g., "find Italian restaurants near me")
+            user_id: User identifier
+            profile: User profile with location info
+            
+        Returns:
+            Search results with restaurants and AI-generated summary
+        """
+        logger.info(f"Handler: SEARCH_RESTAURANTS for user {user_id}")
+        
+        try:
+            yelp_tool = get_yelp_tool()
+            memory_service = get_memory_service()
+            
+            # Check if Yelp API is configured
+            if not yelp_tool.is_available:
+                logger.warning("Yelp API not configured")
+                return {
+                    "type": "restaurants",
+                    "data": {"error": "not_configured"},
+                    "message": "Restaurant search isn't configured yet. Please add YELP_API_KEY to your environment."
+                }
+            
+            # Extract location from profile if available
+            latitude = None
+            longitude = None
+            location_context = ""
+            
+            if profile:
+                location = profile.get("location", "")
+                if location:
+                    location_context = location
+                # Try to get coordinates from profile (if stored)
+                if profile.get("latitude") and profile.get("longitude"):
+                    latitude = profile.get("latitude")
+                    longitude = profile.get("longitude")
+            
+            # Check memories for location and food preferences
+            food_preference = ""
+            if user_id:
+                try:
+                    memories = memory_service.get_all_memories(user_id)
+                    for mem in memories:
+                        if isinstance(mem, dict):
+                            text = mem.get("memory", mem.get("text", "")).lower()
+                        else:
+                            text = str(mem).lower()
+                        # Look for location keywords
+                        if any(kw in text for kw in ["live in", "lives in", "living in", "i'm from", "located in", "i'm in", "i am in", "i stay in"]):
+                            location_context = text
+                            logger.info(f"📍 Found location in memory: {text}")
+                        # Look for food preferences
+                        if any(kw in text for kw in ["vegetarian", "vegan", "gluten-free", "halal", "kosher", "allergic", "don't eat", "prefer"]):
+                            food_preference = text
+                            logger.info(f"🥗 Found food preference in memory: {text}")
+                except Exception as e:
+                    logger.warning(f"Could not get memories: {e}")
+            
+            # Enhance query with location and preferences
+            query = transcript
+            needs_location = any(kw in transcript.lower() for kw in ["near me", "nearest", "nearby", "around me", "close to me"])
+            if location_context and needs_location:
+                # Append location context to query
+                query = f"{transcript} in {location_context}"
+                logger.info(f"🍽️ Enhanced query with location: {query}")
+            
+            if food_preference and not any(kw in transcript.lower() for kw in ["vegetarian", "vegan", "gluten", "halal", "kosher"]):
+                # Add food preference if not already specified
+                query = f"{query} ({food_preference})"
+                logger.info(f"🍽️ Enhanced query with preference: {query}")
+            
+            # Search using Yelp AI
+            response = await yelp_tool.search_restaurants(
+                query=query,
+                latitude=latitude,
+                longitude=longitude
+            )
+            
+            # Format businesses for response
+            businesses_data = []
+            for biz in response.businesses[:5]:  # Limit to 5 results
+                businesses_data.append({
+                    "id": biz.id,
+                    "name": biz.name,
+                    "rating": biz.rating,
+                    "review_count": biz.review_count,
+                    "price": biz.price,
+                    "distance": biz.distance,
+                    "image_url": biz.image_url,
+                    "tags": biz.tags,
+                    "url": biz.url,
+                    "phone": biz.phone
+                })
+            
+            # Build user-friendly message
+            if response.response_text:
+                message = response.response_text
+            elif businesses_data:
+                message = f"I found {len(businesses_data)} restaurants for you:\n"
+                for i, biz in enumerate(businesses_data[:3], 1):
+                    rating = f"⭐ {biz['rating']}" if biz.get('rating') else ""
+                    price = biz.get('price', '')
+                    message += f"\n{i}. {biz['name']} {rating} {price}"
+            else:
+                message = "I couldn't find any restaurants matching your request. Try being more specific about the cuisine or location."
+            
+            return {
+                "type": "restaurants",
+                "data": {
+                    "businesses": businesses_data,
+                    "count": len(businesses_data),
+                    "chat_id": response.chat_id
+                },
+                "message": message
+            }
+            
+        except Exception as e:
+            logger.error(f"Search restaurants handler failed: {e}")
+            return {
+                "type": "restaurants",
+                "data": {"error": str(e)},
+                "message": "I'm having trouble searching for restaurants right now. Please try again."
+            }
+
     async def _handle_remember_this(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
         """
         Handle requests to remember facts/preferences.
@@ -1902,22 +2152,21 @@ Gmail query:"""
         Returns:
             Confirmation of stored memory
         """
-        print(f">>> REMEMBER_THIS handler called for user {user_id}")
         logger.info(f"Handler: REMEMBER_THIS for user {user_id}")
         
         try:
             memory_service = get_memory_service()
-            print(f">>> Memory service obtained: {memory_service.memory is not None}")
             
             # Extract what to remember using Gemini
             prompt = f"""Extract the fact or information the user wants to remember.
-Return ONLY the fact as a clear, concise statement.
+Return ONLY the fact as a clear, concise statement from the user's perspective.
 
 Examples:
 "Remember that my wife's birthday is March 15" → "Wife's birthday is March 15"
-"Don't forget I'm allergic to peanuts" → "User is allergic to peanuts"
+"Don't forget I'm allergic to peanuts" → "Allergic to peanuts"
 "Remember my mom's name is Linda" → "Mom's name is Linda"
 "Keep in mind I prefer morning meetings" → "Prefers morning meetings"
+"Remember I have a second wife named Sarah" → "Second wife's name is Sarah"
 
 User request: "{transcript}"
 
@@ -1937,22 +2186,26 @@ Fact to remember:"""
                     "message": "I couldn't understand what you'd like me to remember. Could you rephrase that?"
                 }
             
-            # Store the memory
-            result = memory_service.add_memory(user_id, fact, metadata={"source": "explicit"})
+            # Fire-and-forget: Store memory in background for instant response
+            async def save_memory_async():
+                try:
+                    result = memory_service.add_memory(user_id, fact, metadata={"source": "explicit"})
+                    if result.get("success"):
+                        logger.info(f"✓ Background: Stored memory for {user_id}: {fact}")
+                    else:
+                        logger.warning(f"Background: Failed to store memory: {result.get('error')}")
+                except Exception as e:
+                    logger.error(f"Background: Memory save failed: {e}")
             
-            if result.get("success"):
-                logger.info(f"✓ Stored memory for {user_id}: {fact}")
-                return {
-                    "type": "memory",
-                    "data": {"action": "stored", "memory": fact},
-                    "message": f"Got it! I'll remember that: {fact}"
-                }
-            else:
-                return {
-                    "type": "memory",
-                    "data": {"error": result.get("error")},
-                    "message": "I had trouble storing that memory. Let me try again."
-                }
+            # Don't await - fire and forget!
+            asyncio.create_task(save_memory_async())
+            
+            logger.info(f"Responding immediately, memory save in background for {user_id}")
+            return {
+                "type": "memory",
+                "data": {"action": "stored", "memory": fact},
+                "message": f"Got it! I'll remember that."
+            }
                 
         except Exception as e:
             logger.error(f"Remember handler failed: {e}")
@@ -1973,7 +2226,6 @@ Fact to remember:"""
         Returns:
             List of relevant memories
         """
-        print(f">>> RECALL_MEMORY handler called for user {user_id}")
         logger.info(f"Handler: RECALL_MEMORY for user {user_id}")
         
         try:
@@ -1991,11 +2243,9 @@ Fact to remember:"""
             if is_general:
                 # Get all memories
                 memories = memory_service.get_all_memories(user_id)
-                print(f">>> Got ALL memories: {memories}")
             else:
-                # Search for relevant memories
+                # Search for relevant memories - limit to top 2 for specific queries
                 memories = memory_service.search_memories(user_id, transcript, limit=10)
-                print(f">>> Searched memories for '{transcript}': {memories}")
             
             if not memories:
                 return {
@@ -2116,7 +2366,7 @@ Fact to remember:"""
                 memory_text = str(top_memory)
             
             if memory_id:
-                success = memory_service.delete_memory(memory_id)
+                success = memory_service.delete_memory(memory_id, user_id=user_id)
                 if success:
                     return {
                         "type": "memory",
@@ -2138,14 +2388,15 @@ Fact to remember:"""
                 "message": "I'm having trouble with my memory right now."
             }
 
-    async def _handle_general_chat(self, transcript: str, profile: Dict[str, Any] = None, history: list = None) -> Dict[str, Any]:
+    async def _handle_general_chat(self, transcript: str, profile: Dict[str, Any] = None, history: list = None, user_id: str = None) -> Dict[str, Any]:
         """
-        Handle general conversation using Gemini AI.
+        Handle general conversation using Gemini AI with memory context.
         
         Args:
             transcript: User's conversational message
             profile: Optional user profile for personalization
             history: Optional conversation history for context
+            user_id: Optional user ID for memory context injection
             
         Returns:
             Conversational response from Gemini
@@ -2153,14 +2404,41 @@ Fact to remember:"""
         logger.info("Handler: GENERAL_CHAT")
         
         try:
-            # Generate conversational response with profile and history context
-            response = await self.gemini_service.generate_response(transcript, profile, history)
+            # Inject user memories as context if available
+            memory_context = ""
+            if user_id:
+                try:
+                    memory_service = get_memory_service()
+                    memories = memory_service.get_all_memories(user_id)
+                    if memories:
+                        memory_parts = []
+                        for mem in memories:
+                            if isinstance(mem, dict):
+                                text = mem.get("memory", mem.get("text", ""))
+                            else:
+                                text = str(mem)
+                            if text:
+                                memory_parts.append(f"- {text}")
+                        if memory_parts:
+                            memory_context = "Facts the user told me about themselves (these describe the user's life, NOT the user's name - use 'your' when referencing):\n" + "\n".join(memory_parts)
+                            print(f"💭 Injecting {len(memory_parts)} memories into chat context")
+                except Exception as e:
+                    logger.warning(f"Failed to get memories for context: {e}")
+            
+            # Generate conversational response with profile, history, and memory context
+            response = await self.gemini_service.generate_response(
+                transcript, 
+                profile, 
+                history,
+                memory_context=memory_context
+            )
             
             return {
                 "type": "conversation",
                 "data": {
                     "response_type": "casual",
                     "context": "general_chat",
+                    "memory_used": bool(memory_context),
                 },
                 "message": response,
             }
