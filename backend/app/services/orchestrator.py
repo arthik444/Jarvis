@@ -289,6 +289,7 @@ class OrchestratorService:
             "DELETE_CALENDAR_EVENT": lambda t: self._handle_delete_calendar_event(t, user_id),
             "CHECK_EMAIL": lambda t: self._handle_check_email(t, user_id),
             "SEARCH_EMAIL": lambda t: self._handle_search_email(t, user_id),
+            "ANALYZE_EMAIL": lambda t: self._handle_analyze_email(t, user_id),
             "REMEMBER_THIS": lambda t: self._handle_remember_this(t, user_id),
             "RECALL_MEMORY": lambda t: self._handle_recall_memory(t, user_id),
             "FORGET_THIS": lambda t: self._handle_forget_this(t, user_id),
@@ -1733,15 +1734,17 @@ JSON:"""
                 email_filter = "unread"
                 summarize = False
             
-            # Build query based on filter
-            query = ""
+            # Build query based on filter - always include category:primary
+            base_filter = "category:primary"
             if email_filter == "unread":
-                query = "is:unread"
+                query = f"{base_filter} is:unread"
             elif email_filter == "today":
                 from datetime import datetime
                 today = datetime.now().strftime("%Y/%m/%d")
-                query = f"after:{today}"
-            # "all" = no filter
+                query = f"{base_filter} after:{today}"
+            else:
+                # "all" = just primary inbox
+                query = base_filter
             
             # Get unread count for context
             unread_count = gmail_tool.get_unread_count()
@@ -1825,13 +1828,20 @@ JSON:"""
             
             # Extract search query using Gemini
             prompt = f"""Extract the Gmail search query from this request. 
-Return ONLY the Gmail search syntax. Use Gmail operators like from:, subject:, to:, is:unread, etc.
+Return ONLY the Gmail search syntax. Use Gmail operators: from:, subject:, to:, is:unread, newer_than:, older_than:
+
+IMPORTANT: 
+- For "from" queries, use the exact name: "from John" → "from:John"
+- Keep queries simple and precise
+- Do NOT include "category:primary" - I'll add that
 
 Examples:
 - "find emails from John" → "from:John"
-- "emails about meeting" → "subject:meeting"
+- "find emails from John Smith" → "from:John Smith"
+- "emails about meeting" → "subject:meeting OR meeting"
 - "messages from boss last week" → "from:boss newer_than:7d"
 - "unread emails from sarah" → "from:sarah is:unread"
+- "emails from amazon" → "from:amazon"
 
 Request: "{transcript}"
 
@@ -1845,6 +1855,10 @@ Gmail query:"""
             query = response.text.strip().strip('"\'')
             if not query:
                 query = transcript  # Fallback to raw transcript
+            
+            # Always add category:primary to filter out Promotions/Social/Updates
+            if "category:" not in query.lower():
+                query = f"category:primary {query}"
             
             logger.info(f"📧 Gmail search query: '{query}'")
             
@@ -1890,6 +1904,106 @@ Gmail query:"""
                 "type": "email_search",
                 "data": {"error": str(e)},
                 "message": "I'm having trouble searching your emails right now."
+            }
+
+    async def _handle_analyze_email(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
+        """
+        Handle email content analysis requests - read bodies and analyze with LLM.
+        
+        Args:
+            transcript: User's request (e.g., "do any of my emails have deadlines?")
+            user_id: User identifier for data isolation
+            
+        Returns:
+            Analysis results from reading email content
+        """
+        logger.info(f"Handler: ANALYZE_EMAIL for user {user_id}")
+        
+        try:
+            gmail_tool = get_gmail_tool(user_id=user_id)
+            
+            # Check if authorized
+            if not gmail_tool.service:
+                logger.info(f"User {user_id} requested email analysis but Gmail is not authorized")
+                return {
+                    "type": "email_analysis",
+                    "data": {"error": "not_authorized"},
+                    "message": "I don't have access to your Gmail yet. You can connect it in the Profile settings!"
+                }
+            
+            # Extract how many emails to analyze (default 5, max 10)
+            import re
+            count_match = re.search(r'\b(\d+)\s*emails?\b', transcript.lower())
+            email_count = min(int(count_match.group(1)), 10) if count_match else 5
+            
+            # Fetch recent emails from Primary inbox
+            emails = gmail_tool.get_recent_emails(max_results=email_count, query="category:primary")
+            
+            if not emails:
+                return {
+                    "type": "email_analysis",
+                    "data": {"emails_analyzed": 0},
+                    "message": "You don't have any recent emails in your Primary inbox to analyze."
+                }
+            
+            # Fetch full body for each email
+            email_contents = []
+            for email in emails:
+                body = gmail_tool.get_email_body(email.get('id', ''))
+                # Truncate long bodies to avoid token limits
+                if len(body) > 1500:
+                    body = body[:1500] + "...[truncated]"
+                
+                email_contents.append({
+                    'from': email.get('from', 'Unknown'),
+                    'subject': email.get('subject', '(No Subject)'),
+                    'date': email.get('date', ''),
+                    'body': body or email.get('snippet', '')
+                })
+            
+            # Build email digest for LLM
+            email_digest = ""
+            for i, e in enumerate(email_contents, 1):
+                email_digest += f"\n--- Email {i} ---\n"
+                email_digest += f"From: {e['from']}\n"
+                email_digest += f"Subject: {e['subject']}\n"
+                email_digest += f"Date: {e['date']}\n"
+                email_digest += f"Content: {e['body']}\n"
+            
+            # Send to LLM for analysis
+            prompt = f"""You are Jarvis, analyzing the user's emails to answer their question.
+
+User's question: "{transcript}"
+
+Here are their last {len(email_contents)} emails:
+{email_digest}
+
+Based on these emails, answer the user's question directly and conversationally.
+Be specific - mention email subjects/senders when relevant.
+Keep response under 3 sentences unless they asked for a detailed summary."""
+
+            response = self.gemini_service.model.generate_content(
+                prompt,
+                generation_config={"temperature": 0.7, "max_output_tokens": 300}
+            )
+            
+            analysis = response.text.strip()
+            
+            return {
+                "type": "email_analysis",
+                "data": {
+                    "emails_analyzed": len(email_contents),
+                    "question": transcript
+                },
+                "message": analysis
+            }
+            
+        except Exception as e:
+            logger.error(f"Analyze email handler failed: {e}")
+            return {
+                "type": "email_analysis",
+                "data": {"error": str(e)},
+                "message": "I'm having trouble analyzing your emails right now."
             }
 
     async def _handle_remember_this(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
@@ -1996,7 +2110,7 @@ Fact to remember:"""
                 memories = memory_service.get_all_memories(user_id)
             else:
                 # Search for relevant memories - limit to top 2 for specific queries
-                memories = memory_service.search_memories(user_id, transcript, limit=2)
+                memories = memory_service.search_memories(user_id, transcript, limit=10)
             
             if not memories:
                 return {
@@ -2171,7 +2285,7 @@ Fact to remember:"""
                             if text:
                                 memory_parts.append(f"- {text}")
                         if memory_parts:
-                            memory_context = "Things I remember about you (use 'you/your' when referring to these):\n" + "\n".join(memory_parts)
+                            memory_context = "Facts the user told me about themselves (these describe the user's life, NOT the user's name - use 'your' when referencing):\n" + "\n".join(memory_parts)
                             print(f"💭 Injecting {len(memory_parts)} memories into chat context")
                 except Exception as e:
                     logger.warning(f"Failed to get memories for context: {e}")
