@@ -1,6 +1,7 @@
-"""Gemini AI service for conversational responses"""
 import logging
+import mimetypes
 from functools import lru_cache
+from typing import List, Optional, Dict, Any
 
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
@@ -35,7 +36,7 @@ class GeminiService:
         )
         logger.info("✓ Gemini Flash service initialized")
 
-    async def generate_response(self, user_message: str, profile: dict = None, history: list = None, memory_context: str = None) -> str:
+    async def generate_response(self, user_message: str, profile: dict = None, history: list = None, memory_context: str = None, file_paths: List[str] = None) -> str:
         """
         Generate a conversational response to user input.
         
@@ -44,6 +45,7 @@ class GeminiService:
             profile: Optional user profile for personalization
             history: Optional conversation history for context
             memory_context: Optional long-term memory context about the user
+            file_paths: Optional list of paths to images or documents
             
         Returns:
             Conversational response
@@ -94,9 +96,31 @@ IMPORTANT: When referencing the user's personal information below, use "your" (e
 {profile_context}{history_context}User: {user_message}
 Manas:"""
 
-            # Generate response with minimal configuration for speed
+            # Prepare parts for multimodal content
+            prompt_parts = [prompt]
+            
+            # Add files if provided
+            if file_paths:
+                for path in file_paths:
+                    try:
+                        mime_type, _ = mimetypes.guess_type(path)
+                        # Default to octet-stream if unknown
+                        mime_type = mime_type or "application/octet-stream"
+                        
+                        with open(path, "rb") as f:
+                            data = f.read()
+                        
+                        prompt_parts.append({
+                            "mime_type": mime_type,
+                            "data": data
+                        })
+                        logger.info(f"Added file to Gemini prompt: {path} ({mime_type})")
+                    except Exception as e:
+                        logger.error(f"Failed to load file for Gemini: {path}, error: {e}")
+
+            # Generate response with parts
             response = self.model.generate_content(
-                prompt,
+                prompt_parts,
                 generation_config={
                     "temperature": 0.7,
                     "top_p": 0.95,
@@ -114,7 +138,7 @@ Manas:"""
             # Return friendly fallback response
             return "I'm having trouble thinking right now. Can you try again?"
 
-    async def generate_response_stream(self, user_message: str, profile: dict = None, history: list = None):
+    async def generate_response_stream(self, user_message: str, profile: dict = None, history: list = None, file_paths: List[str] = None):
         """
         Generate a conversational response with streaming, with optional profile context and history.
         
@@ -122,6 +146,7 @@ Manas:"""
             user_message: User's transcribed message
             profile: Optional user profile for personalization
             history: Optional conversation history for context
+            file_paths: Optional list of paths to images or documents
             
         Yields:
             Text chunks as they're generated
@@ -166,9 +191,30 @@ Your capabilities: weather queries, task management (add/complete/update/delete 
 {profile_context}{history_context}User: {user_message}
 Manas:"""
 
+            # Prepare parts for multimodal content
+            prompt_parts = [prompt]
+            
+            # Add files if provided
+            if file_paths:
+                for path in file_paths:
+                    try:
+                        mime_type, _ = mimetypes.guess_type(path)
+                        mime_type = mime_type or "application/octet-stream"
+                        
+                        with open(path, "rb") as f:
+                            data = f.read()
+                        
+                        prompt_parts.append({
+                            "mime_type": mime_type,
+                            "data": data
+                        })
+                        logger.info(f"Added file to Gemini stream prompt: {path} ({mime_type})")
+                    except Exception as e:
+                        logger.error(f"Failed to load file for Gemini stream: {path}, error: {e}")
+
             # Generate response with streaming enabled
             response = self.model.generate_content(
-                prompt,
+                prompt_parts,
                 generation_config={
                     "temperature": 0.7,
                     "top_p": 0.95,

@@ -8,7 +8,8 @@ with accurate, web-sourced citations.
 import logging
 import os
 import httpx
-from typing import Dict, Any, Optional
+import mimetypes
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,8 @@ class LearningTool:
         self, 
         question: str, 
         learning_level: Optional[str] = None,
-        history: list = None
+        history: list = None,
+        file_paths: List[str] = None
     ) -> Dict[str, Any]:
         """
         Answer educational question using web search + Gemini.
@@ -103,8 +105,8 @@ Resolved Question (short and factual):"""
                     search_results = search_data['context']
                     citations = search_data['citations']
             
-            # Generate answer using Gemini with search context
-            answer = await self._generate_answer(resolved_question, search_results, learning_level)
+            # Generate answer using Gemini with search context (and files if any)
+            answer = await self._generate_answer(resolved_question, search_results, learning_level, file_paths=file_paths)
             
             result = {
                 "answer": answer,
@@ -193,7 +195,8 @@ Resolved Question (short and factual):"""
         self, 
         question: str, 
         search_context: str, 
-        learning_level: Optional[str]
+        learning_level: Optional[str],
+        file_paths: List[str] = None
     ) -> str:
         """Generate answer using Gemini with search context."""
         
@@ -232,8 +235,27 @@ Question: {question}
 
 Provide a clear, accurate answer in 2-3 sentences. If you don't have reliable information, say so honestly."""
         
+        # Prepare parts for multimodal content
+        prompt_parts = [prompt]
+        
+        # Add files if provided
+        if file_paths:
+            for path in file_paths:
+                try:
+                    mime_type, _ = mimetypes.guess_type(path)
+                    mime_type = mime_type or "application/octet-stream"
+                    with open(path, "rb") as f:
+                        data = f.read()
+                    prompt_parts.append({
+                        "mime_type": mime_type,
+                        "data": data
+                    })
+                    logger.info(f"📚 Added file to learning tool prompt: {path}")
+                except Exception as e:
+                    logger.error(f"Failed to load file for learning tool: {path}, error: {e}")
+
         response = self.gemini.generate_content(
-            prompt,
+            prompt_parts,
             generation_config={"temperature": 0.3}
         )
         

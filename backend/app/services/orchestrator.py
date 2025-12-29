@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from functools import lru_cache
-from typing import Any, Dict, AsyncGenerator, Tuple, Optional, AsyncGenerator, Tuple, Optional
+from typing import Any, Dict, List, AsyncGenerator, Tuple, Optional
 from datetime import datetime, timedelta
 
 from app.services.gemini import get_gemini_service
@@ -10,6 +10,7 @@ from app.services.fitbit_tool import get_fitbit_tool
 from app.services.gmail_tool import get_gmail_tool
 from app.services.memory_service import get_memory_service
 from app.services.yelp_tool import get_yelp_tool
+from app.api.files import get_file_path, delete_file
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,7 @@ class OrchestratorService:
         self.yelp_chat_ids = {}  # user_id -> last yelp chat_id for multi-turn
         logger.info("✓ Orchestrator service initialized")
 
-    async def process_transcript(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
+    async def process_transcript(self, transcript: str, user_id: str = "default", file_ids: List[str] = None) -> Dict[str, Any]:
         """
         Process transcript by classifying intent and routing to handler.
         
@@ -47,15 +48,29 @@ class OrchestratorService:
             # Step 2: Get conversation history
             history = self._get_conversation_history(user_id)
             
-            # Step 3: Classify Intent using fast Gemini Flash (with history context)
-            intent_result = await self.gemini_service.classify_intent(transcript, history=history)
-            intent = intent_result["intent"]
-            confidence = intent_result["confidence"]
+            # Step 2.5: Resolve file_ids to paths
+            file_paths = []
+            if file_ids:
+                for fid in file_ids:
+                    path = get_file_path(fid)
+                    if path:
+                        file_paths.append(path)
+                logger.info(f"Resolved {len(file_paths)} file paths from {len(file_ids)} IDs")
             
-            logger.info(f"Orchestrator: Intent={intent}, Confidence={confidence}")
+            # Step 3: Classify Intent using fast Gemini Flash (with history context)
+            if file_paths:
+                # Priority: if files are present, force document analysis mode
+                intent = "DOC_ANALYSIS"
+                confidence = 1.0
+                logger.info(f"Orchestrator: Analysis Mode Triggered (Files present). Forcing intent={intent}")
+            else:
+                intent_result = await self.gemini_service.classify_intent(transcript, history=history)
+                intent = intent_result["intent"]
+                confidence = intent_result["confidence"]
+                logger.info(f"Orchestrator: Intent={intent}, Confidence={confidence}")
             
             # Step 4: Route to appropriate handler (extraction happens inside handlers)
-            handler_response = await self._route_to_handler(intent, transcript, confidence, profile, history, user_id)
+            handler_response = await self._route_to_handler(intent, transcript, confidence, profile, history, user_id, file_paths=file_paths)
             
             # Step 5: Update conversation history for all intents
             self._add_to_history(user_id, "user", transcript)
@@ -78,10 +93,16 @@ class OrchestratorService:
                 "transcript": transcript,
                 "intent": "GENERAL_CHAT",
                 "confidence": 0.0,
-                "handler_response": await self._handle_general_chat(transcript, profile=None, history=None),
+                "handler_response": await self._handle_general_chat(transcript, profile=None, history=None, file_paths=None),
             }
+        finally:
+            # Step 7: Auto-cleanup: Delete files after processing
+            if file_ids:
+                for f_id in file_ids:
+                    logger.info(f"🗑️ Deleting file {f_id} in process_transcript finally block")
+                    delete_file(f_id)
 
-    async def process_transcript_stream(self, transcript: str, user_id: str = "default"):
+    async def process_transcript_stream(self, transcript: str, user_id: str = "default", file_ids: List[str] = None):
         """
         Process transcript with streaming support for faster responses.
         
@@ -106,11 +127,24 @@ class OrchestratorService:
             
             # Step 2: Get conversation history
             history = self._get_conversation_history(user_id)
+
+            # Step 2.5: Resolve file_ids to paths
+            file_paths = []
+            if file_ids:
+                for fid in file_ids:
+                    path = get_file_path(fid)
+                    if path:
+                        file_paths.append(path)
+                logger.info(f"Resolved {len(file_paths)} file paths for streaming")
             
             # Step 3: Classify Intent (with history context)
-            intent_result = await self.gemini_service.classify_intent(transcript, history=history)
-            intent = intent_result["intent"]
-            confidence = intent_result["confidence"]
+            if file_paths:
+                intent = "DOC_ANALYSIS"
+                confidence = 1.0
+            else:
+                intent_result = await self.gemini_service.classify_intent(transcript, history=history)
+                intent = intent_result["intent"]
+                confidence = intent_result["confidence"]
             
             logger.info(f"Orchestrator Streaming: Intent={intent}, Confidence={confidence}")
             
@@ -129,8 +163,26 @@ class OrchestratorService:
                 # Collect response for history
                 full_response = ""
                 
-                # Stream with profile and history context
-                async for chunk in self.gemini_service.generate_response_stream(transcript, profile, history):
+                # Stream with profile and history context (and files)
+                async for chunk in self.gemini_service.generate_response_stream(transcript, profile, history, file_paths=file_paths):
+                    full_response += chunk
+                    yield chunk, intent, confidence
+                
+                # Add assistant response to history
+                self._add_to_history(user_id, "model", full_response)
+            elif intent == "DOC_ANALYSIS":
+                logger.info("Streaming from Gemini for DOC_ANALYSIS")
+                # Add user message to history
+                self._add_to_history(user_id, "user", transcript)
+                
+                # Collect response for history
+                full_response = ""
+                
+                # Prepend focus instruction
+                analysis_transcript = f"[SYSTEM: Focus exclusively on the provided document/image. Answer based ONLY on its content.] {transcript}"
+                
+                # Stream with focus context
+                async for chunk in self.gemini_service.generate_response_stream(analysis_transcript, profile, history, file_paths=file_paths):
                     full_response += chunk
                     yield chunk, intent, confidence
                 
@@ -138,21 +190,28 @@ class OrchestratorService:
                 self._add_to_history(user_id, "model", full_response)
             else:
                 # For structured intents: return immediate response
-                logger.info(f"Immediate response for {intent} (structured data)")
-                handler_response = await self._route_to_handler(intent, transcript, confidence, profile, history, user_id)
+                handler_response = await self._route_to_handler(intent, transcript, confidence, profile, history, user_id, file_paths=file_paths)
                 
                 # Add to history
                 self._add_to_history(user_id, "user", transcript)
                 self._add_to_history(user_id, "model", handler_response["message"])
                 
                 yield handler_response["message"], intent, confidence
-            
-            # Extract and update profile (non-blocking)
-            asyncio.create_task(self._extract_and_update_profile(transcript, user_id))
-                
+
         except Exception as e:
             logger.error(f"Orchestrator streaming error: {e}")
             # Fallback to generic response
+            yield "I'm sorry, I encountered an error. How else can I help?", "GENERAL_CHAT", 0.0
+        finally:
+            # Step 4: Auto-cleanup: Delete files after streaming/processing is complete
+            if file_ids:
+                for f_id in file_ids:
+                    logger.info(f"🗑️ Deleting file {f_id} in streaming finally block")
+                    delete_file(f_id)
+            
+            # Extract and update profile (non-blocking) - only if transcript successful
+            if transcript:
+                asyncio.create_task(self._extract_and_update_profile(transcript, user_id))
             yield "I'm having trouble processing that right now.", "GENERAL_CHAT", 0.0
 
     async def _get_user_profile(self, user_id: str) -> Dict[str, Any]:
@@ -258,7 +317,7 @@ class OrchestratorService:
         logger.debug(f"History updated for {user_id}: {len(self.conversation_history[user_id])} messages")
     
     async def _route_to_handler(
-        self, intent: str, transcript: str, confidence: float, profile: Dict[str, Any], history: list = None, user_id: str = "default"
+        self, intent: str, transcript: str, confidence: float, profile: Dict[str, Any], history: list = None, user_id: str = "default", file_paths: List[str] = None
     ) -> Dict[str, Any]:
         """
         Route to appropriate handler based on intent.
@@ -280,7 +339,7 @@ class OrchestratorService:
             logger.info(f"Low confidence ({confidence}), fallback to GENERAL_CHAT")
             intent = "GENERAL_CHAT"
         
-        # Handler mapping (note: GENERAL_CHAT needs special handling for history)
+        # Handler mapping
         handlers = {
             "GET_WEATHER": lambda t: self._handle_get_weather(t, profile, history),
             "ADD_TASK": lambda t: self._handle_add_task(t, user_id, history),
@@ -301,16 +360,17 @@ class OrchestratorService:
             "REMEMBER_THIS": lambda t: self._handle_remember_this(t, user_id, history),
             "RECALL_MEMORY": lambda t: self._handle_recall_memory(t, user_id, history),
             "FORGET_THIS": lambda t: self._handle_forget_this(t, user_id, history),
-            "LEARN": lambda t: self._handle_learn(t, history),
+            "LEARN": lambda t: self._handle_learn(t, history, file_paths=file_paths),
             "GET_NEWS": lambda t: self._handle_news(t, history),
+            "DOC_ANALYSIS": lambda t: self._handle_doc_analysis(t, profile, history, user_id, file_paths)
         }
         
         # Handle GENERAL_CHAT specially to pass history and user_id for memory context
         if intent == "GENERAL_CHAT":
-            handler_response = await self._handle_general_chat(transcript, profile, history, user_id)
+            handler_response = await self._handle_general_chat(transcript, profile, history, user_id, file_paths=file_paths)
         else:
             # Get handler or default to general chat
-            handler = handlers.get(intent, lambda t: self._handle_general_chat(t, profile, history, user_id))
+            handler = handlers.get(intent, lambda t: self._handle_general_chat(t, profile, history, user_id, file_paths=file_paths))
             handler_response = await handler(transcript)
         
         # Beautify the message for natural speech (skip for GENERAL_CHAT as it's already natural)
@@ -1598,7 +1658,7 @@ Resolved Request (include the date mentioned in history):"""
                 "message": "I had trouble deleting that event. Please try again."
             }
 
-    async def _handle_learn(self, transcript: str, history: list = None) -> Dict[str, Any]:
+    async def _handle_learn(self, transcript: str, history: list = None, file_paths: List[str] = None) -> Dict[str, Any]:
         """
         Handle educational queries using Google Search grounding.
         
@@ -1619,8 +1679,8 @@ Resolved Request (include the date mentioned in history):"""
             # Get user's learning level from profile if available (future enhancement)
             learning_level = None
             
-            # Answer question with search grounding (context-aware)
-            result = await learning_tool.answer_question(transcript, learning_level, history)
+            # Answer question with search grounding (context-aware) and files
+            result = await learning_tool.answer_question(transcript, learning_level, history, file_paths=file_paths)
             
             # Handle errors
             if "error" in result:
@@ -2674,7 +2734,7 @@ Resolved Subject (short):"""
                 "message": "I'm having trouble with my memory right now."
             }
 
-    async def _handle_general_chat(self, transcript: str, profile: Dict[str, Any] = None, history: list = None, user_id: str = None) -> Dict[str, Any]:
+    async def _handle_general_chat(self, transcript: str, profile: Dict[str, Any] = None, history: list = None, user_id: str = None, file_paths: List[str] = None) -> Dict[str, Any]:
         """
         Handle general conversation using Gemini AI with memory context.
         
@@ -2711,12 +2771,13 @@ Resolved Subject (short):"""
                 except Exception as e:
                     logger.warning(f"Failed to get memories for context: {e}")
             
-            # Generate conversational response with profile, history, and memory context
+            # Generate conversational response with profile, history, memory context, and files
             response = await self.gemini_service.generate_response(
                 transcript, 
                 profile, 
                 history,
-                memory_context=memory_context
+                memory_context=memory_context,
+                file_paths=file_paths
             )
             
             return {
@@ -2736,6 +2797,14 @@ Resolved Subject (short):"""
                 "message": "I'm having trouble thinking right now. Can you try again?",
             }
 
+    async def _handle_doc_analysis(self, transcript: str, profile: Dict[str, Any] = None, history: list = None, user_id: str = None, file_paths: List[str] = None) -> Dict[str, Any]:
+        """Specific handler for document/image analysis to ensure focus."""
+        logger.info("Handler: DOC_ANALYSIS")
+        
+        # Prepend instruction for focus
+        focused_transcript = f"[SYSTEM: Analyze the provided document/image. Answer the user based ONLY on the content of the file(s).] {transcript}"
+        
+        return await self._handle_general_chat(focused_transcript, profile, history, user_id, file_paths)
 
 @lru_cache
 def get_orchestrator() -> OrchestratorService:

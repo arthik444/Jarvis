@@ -8,7 +8,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, voice, chat, tasks, profile, fitbit_auth, gmail_auth
+from app.api import auth, voice, chat, tasks, profile, fitbit_auth, gmail_auth, files
 from app.config import setup_google_credentials, get_settings
 
 # Set up Google Cloud credentials from .env
@@ -43,6 +43,7 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(fitbit_auth.router, prefix="/auth", tags=["fitbit-auth"])
 app.include_router(gmail_auth.router, prefix="/auth", tags=["gmail-auth"])
 app.include_router(profile.router, prefix="/api", tags=["profile"])
+app.include_router(files.router, prefix="/api/files", tags=["files"])
 
 
 @app.get("/")
