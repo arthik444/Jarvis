@@ -453,10 +453,10 @@ class OrchestratorService:
                 end = target_date.replace(hour=23, minute=59, second=59, microsecond=999999)
                 return (start, end)
         
-        # Default: next 7 days (for update/delete operations)
+        # Default: TODAY only (for "daily summary" without date specification)
         start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = (now + timedelta(days=7)).replace(hour=23, minute=59, second=59, microsecond=999999)
-        logger.info(f"No specific date found, using default range: next 7 days")
+        end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        logger.info(f"No specific date found, using default: today only")
         return (start, end)
 
     def _find_best_task_match(self, query: str, tasks: list) -> dict | None:
@@ -502,7 +502,8 @@ class OrchestratorService:
                 return raw_message
             
             prompt = f"""Make this natural for a voice assistant speaking directly to the user.
-Use "you/your" (not "they/their"). Conversational, 2-3 sentences.
+Use "you/your" (not "they/their"). Keep it conversational but preserve ALL key information - do NOT drop any data.
+Include ALL sections: calendar events, health data, tasks, everything  under 2-3 sentences..
 
 Input: {raw_message}
 
@@ -510,7 +511,7 @@ Natural:"""
             
             response = self.gemini_service.model.generate_content(
                 prompt,
-                generation_config={"temperature": 0.7, "max_output_tokens": 120}
+                generation_config={"temperature": 0.7, "max_output_tokens": 300}
             )
             
             beautified = response.text.strip()
@@ -1256,6 +1257,7 @@ Resolved Request (include the date mentioned in history):"""
             # Fetch Fitbit health data
             fitbit_tool = get_fitbit_tool()
             health_summary = fitbit_tool.get_daily_summary(start_date)
+            print(f"💪 DEBUG: Health summary = {repr(health_summary[:100]) if health_summary else 'EMPTY'}")
 
             if events:
                 # Use real calendar data

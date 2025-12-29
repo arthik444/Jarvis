@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, Save, Calendar, ExternalLink, CheckCircle, Mail } from 'lucide-react';
+import { ArrowLeft, Save, Calendar, ExternalLink, CheckCircle, Mail, Activity } from 'lucide-react';
 import { profileAPI, calendarAPI } from '@/services/api';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Profile, ProfileUpdate, Voice } from '@/types/api';
@@ -17,12 +17,14 @@ export function ProfileView({ onBack }: ProfileViewProps) {
   const [formData, setFormData] = useState<ProfileUpdate>({});
   const [calendarStatus, setCalendarStatus] = useState<{ authorized: boolean; calendar_connected: boolean } | null>(null);
   const [gmailStatus, setGmailStatus] = useState<{ authorized: boolean; gmail_connected: boolean } | null>(null);
+  const [fitbitStatus, setFitbitStatus] = useState<{ authorized: boolean; fitbit_connected: boolean } | null>(null);
 
   useEffect(() => {
     loadProfile();
     loadVoices();
     loadCalendarStatus();
     loadGmailStatus();
+    loadFitbitStatus();
   }, []);
 
   const loadProfile = async () => {
@@ -78,6 +80,18 @@ export function ProfileView({ onBack }: ProfileViewProps) {
     }
   };
 
+  const loadFitbitStatus = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/auth/fitbit/status');
+      if (response.ok) {
+        const status = await response.json();
+        setFitbitStatus(status);
+      }
+    } catch (err) {
+      console.error('Failed to load Fitbit status:', err);
+    }
+  };
+
   const handleConnectCalendar = async () => {
     try {
       const url = await calendarAPI.getConnectUrl();
@@ -119,6 +133,31 @@ export function ProfileView({ onBack }: ProfileViewProps) {
         }
       } catch (err) {
         console.error('Gmail polling error:', err);
+      }
+    }, 3000);
+
+    // Stop polling after 2 minutes
+    setTimeout(() => clearInterval(interval), 120000);
+  };
+
+  const handleConnectFitbit = () => {
+    // Open Fitbit OAuth in popup
+    const url = 'http://localhost:8000/auth/fitbit';
+    window.open(url, '_blank', 'width=600,height=700');
+
+    // Poll for status update
+    const interval = setInterval(async () => {
+      try {
+        const response = await fetch('http://localhost:8000/auth/fitbit/status');
+        if (response.ok) {
+          const status = await response.json();
+          setFitbitStatus(status);
+          if (status.fitbit_connected) {
+            clearInterval(interval);
+          }
+        }
+      } catch (err) {
+        console.error('Fitbit polling error:', err);
       }
     }, 3000);
 
@@ -364,6 +403,39 @@ export function ProfileView({ onBack }: ProfileViewProps) {
             >
               <Mail size={20} />
               {gmailStatus?.gmail_connected ? 'Reconnect Gmail' : 'Connect Gmail'}
+              <ExternalLink size={16} className="opacity-50" />
+            </button>
+          </div>
+
+          {/* Fitbit Integration */}
+          <div className="glass-panel rounded-lg p-6 mb-12">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-medium text-foreground">
+                Fitbit Integration
+              </h2>
+              {fitbitStatus?.fitbit_connected ? (
+                <div className="flex items-center gap-2 text-green-400 text-sm">
+                  <CheckCircle size={16} />
+                  Connected
+                </div>
+              ) : (
+                <div className="text-amber-400 text-sm">Not Connected (using demo data)</div>
+              )}
+            </div>
+
+            <p className="text-sm text-muted-foreground mb-6">
+              Connect your Fitbit to get real health data in your daily summaries. Without it, Manas uses demo data.
+            </p>
+
+            <button
+              onClick={handleConnectFitbit}
+              className={`flex items-center justify-center gap-3 w-full py-3 rounded-lg border transition-all ${fitbitStatus?.fitbit_connected
+                ? 'bg-muted/20 border-border/50 text-foreground hover:bg-muted/30'
+                : 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/20'
+                }`}
+            >
+              <Activity size={20} />
+              {fitbitStatus?.fitbit_connected ? 'Reconnect Fitbit' : 'Connect Fitbit'}
               <ExternalLink size={16} className="opacity-50" />
             </button>
           </div>
