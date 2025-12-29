@@ -1366,7 +1366,7 @@ Resolved Request (include the date mentioned in history):"""
             "message": "Today you completed 5 tasks and attended 2 meetings. Great progress!",
         }
 
-    async def _handle_create_calendar_event(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
+    async def _handle_create_calendar_event(self, transcript: str, user_id: str = "default", history: list = None) -> Dict[str, Any]:
         """
         Handle calendar event creation requests.
         
@@ -1461,7 +1461,7 @@ Resolved Request (include the date mentioned in history):"""
                 "message": "I had trouble creating that calendar event. Please try again."
             }
 
-    async def _handle_update_calendar_event(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
+    async def _handle_update_calendar_event(self, transcript: str, user_id: str = "default", history: list = None) -> Dict[str, Any]:
         """
         Handle calendar event update requests.
         
@@ -1582,7 +1582,7 @@ Resolved Request (include the date mentioned in history):"""
                 "message": "I had trouble updating that calendar event. Please try again."
             }
 
-    async def _handle_delete_calendar_event(self, transcript: str, user_id: str = "default") -> Dict[str, Any]:
+    async def _handle_delete_calendar_event(self, transcript: str, user_id: str = "default", history: list = None) -> Dict[str, Any]:
         """
         Handle calendar event deletion requests.
         
