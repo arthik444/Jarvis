@@ -67,8 +67,8 @@ class AuthMiddleware:
                     else:
                         firebase_admin.initialize_app()
             
-            # Verify the token
-            decoded_token = auth.verify_id_token(token)
+            # Verify the token with clock tolerance for slight time differences
+            decoded_token = auth.verify_id_token(token, clock_skew_seconds=5)
             return decoded_token
             
         except Exception as e:
